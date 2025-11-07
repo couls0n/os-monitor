@@ -1,0 +1,48 @@
+该代码库包含（可直接拆分为独立文件）：
+
+eBPF/BCC 采集代理：agent/process_agent.py, agent/file_agent.py, agent/net_agent.py（捕获进程、文件 I/O、网络连接）
+
+聚合器：aggregator/collector.py（去重、写入 sqlite 或 JSONL）
+
+数据集生成：dataset/simulate_attacks.py, dataset/prepare_dataset.py（生成攻击样本、分会话）
+
+特征工程：features/graph_utils.py, features/feature_builder.py（进程树构建、图和统计特征）
+
+实验：experiments/train_baseline.py, experiments/train_gnn.py（随机森林基线 + GNN 模板）
+
+工具与可视化脚本，以及 requirements.txt 和 env_setup.sh 的安装脚本。
+
+下面是你现在可以立即做的步骤（runbook），我把关键点按顺序列好，让你能马上运行并扩展实验：
+
+在**隔离的 VM（建议快照）**上创建项目目录，将画布里的内容拆分为文件（或我可以直接帮你拆成可下载文件）。
+
+执行 env_setup.sh（需要 sudo）安装依赖（注意：bcc 需要内核头）。
+
+启动采集 agent（每个在独立终端）：
+
+sudo python3 agent/process_agent.py &
+
+sudo python3 agent/file_agent.py &
+
+sudo python3 agent/net_agent.py &
+采集结果写入 /var/log/os_monitor/*.jsonl。
+
+运行 aggregator/collector.py 聚合并写入本地 sqlite 或合并成一个 JSONL。
+
+在隔离 VM 运行 dataset/simulate_attacks.py --attack ransom 等脚本生成攻击样本，期间 agent 会记录对应行为（仅在 VM）。
+
+运行 dataset/prepare_dataset.py 将原始事件切分为“session”（按时间窗），输出 raw_sessions.pkl。
+
+运行 features/feature_builder.py 构建面向 ML 的表格特征（同时保存图统计量）。
+
+运行 experiments/train_baseline.py（需要先准备好 labels.csv，我也可以帮你按时间窗生成自动标签模板），观察分类报告并迭代特征。
+
+如果你想我接着做任一项，我可以直接在画布里：
+
+把代码拆分成独立文件并打包成 zip（便于直接在 VM 上运行）；
+
+为 feature_builder 增加更多图/时序特征（GNN 节点特征、命令行 tokenization、时序 n-gram 等）并把训练脚本补成端到端、可复现的实验（含随机种子、cross-val、消融实验）；
+
+帮你写 labels.csv 自动标注模板（例如：通过运行 simulate_attacks 时写入 /var/log/os_monitor/attack_meta.json 并用 prepare_dataset 自动贴标签）；
+
+或者把 baseline 扩展为完整论文级别的实验脚本（包括 ROC/PR 曲线、延迟/开销测量、误报分析、消融实验表格和绘图脚本）。
