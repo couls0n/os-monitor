@@ -9,8 +9,8 @@ if [ "$EUID" -ne 0 ]; then
 fi
 
 # 停止所有相关采集进程
-PIDS=$(ps aux | grep -E 'process_agent\.py|file_agent\.py|net_agent\.py' | grep -v grep | awk '{print $2}')
-
+# 将 PIDS 的 grep 规则扩展
+PIDS=$(ps aux | grep -E 'process_agent\.py|file_agent\.py|net_agent\.py|dns_agent\.py|kmod_agent\.py' | grep -v grep | awk '{print $2}')
 if [ -z "$PIDS" ]; then
   echo "⚠️ 未发现正在运行的采集器进程。"
   exit 0

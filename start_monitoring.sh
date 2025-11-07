@@ -21,7 +21,15 @@ echo "✅ 文件采集器已启动 (PID $!)"
 
 nohup python3 agent/net_agent.py > $LOG_DIR/net_agent.log 2>&1 &
 echo "✅ 网络采集器已启动 (PID $!)"
+# ... (原有 process, file, net agent 启动命令)
 
+nohup python3 agent/dns_agent.py > $LOG_DIR/dns_agent.log 2>&1 &
+echo "✅ DNS 采集器已启动 (PID $!)"
+
+nohup python3 agent/kmod_agent.py > $LOG_DIR/kmod_agent.log 2>&1 &
+echo "✅ 内核模块采集器已启动 (PID $!)"
+
+# ... (原有脚本结尾)
 # 显示运行状态
 echo "--------------------------------------"
 echo "📡 所有 Agent 已启动，日志输出目录：$LOG_DIR"
