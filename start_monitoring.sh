@@ -1,6 +1,6 @@
 #!/bin/bash
-# start_monitoring.sh — 一键启动所有数据采集 Agent
-#sudo bash start_monitoring.sh
+# start_monitoring.sh — 一键启动所有 (7 个) 数据采集 Agent
+# sudo bash start_monitoring.sh
 
 # 确保脚本以 root 权限运行
 if [ "$EUID" -ne 0 ]; then
@@ -8,11 +8,11 @@ if [ "$EUID" -ne 0 ]; then
   exit 1
 fi
 
-# 定义日志输出目录
-LOG_DIR="/var/log/os_monitor"
+# 定义日志输出目录 (修正为与 agent 脚本一致)
+LOG_DIR="/var/log/os_monitor_log"
 mkdir -p $LOG_DIR
 
-# 启动各采集器
+# --- 启动原有 Agent ---
 nohup python3 agent/process_agent.py > $LOG_DIR/process_agent.log 2>&1 &
 echo "✅ 进程采集器已启动 (PID $!)"
 
@@ -21,18 +21,23 @@ echo "✅ 文件采集器已启动 (PID $!)"
 
 nohup python3 agent/net_agent.py > $LOG_DIR/net_agent.log 2>&1 &
 echo "✅ 网络采集器已启动 (PID $!)"
-# ... (原有 process, file, net agent 启动命令)
 
+# --- 启动新增 Agent ---
 nohup python3 agent/dns_agent.py > $LOG_DIR/dns_agent.log 2>&1 &
 echo "✅ DNS 采集器已启动 (PID $!)"
 
 nohup python3 agent/kmod_agent.py > $LOG_DIR/kmod_agent.log 2>&1 &
 echo "✅ 内核模块采集器已启动 (PID $!)"
 
-# ... (原有脚本结尾)
+nohup python3 agent/memory_agent.py > $LOG_DIR/memory_agent.log 2>&1 &
+echo "✅ 内存采集器已启动 (PID $!)"
+
+nohup python3 agent/syscall_agent.py > $LOG_DIR/syscall_agent.log 2>&1 &
+echo "✅ 可疑系统调用采集器已启动 (PID $!)"
+
 # 显示运行状态
 echo "--------------------------------------"
-echo "📡 所有 Agent 已启动，日志输出目录：$LOG_DIR"
+echo "📡 所有 7 个 Agent 已启动，日志输出目录：$LOG_DIR"
 echo "可使用 'ps aux | grep agent' 查看进程状态"
-echo "使用 'sudo pkill -f agent' 可一键停止所有 Agent"
+echo "使用 'sudo bash stop_monitoring.sh' 可一键停止所有 Agent"
 echo "--------------------------------------"

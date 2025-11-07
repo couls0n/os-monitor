@@ -1,6 +1,6 @@
 #!/bin/bash
-# stop_monitoring.sh — 一键停止所有数据采集 Agent
-#sudo bash stop_monitoring.sh
+# stop_monitoring.sh — 一键停止所有 (7 个) 数据采集 Agent
+# sudo bash stop_monitoring.sh
 
 # 确保脚本以 root 权限运行
 if [ "$EUID" -ne 0 ]; then
@@ -9,14 +9,15 @@ if [ "$EUID" -ne 0 ]; then
 fi
 
 # 停止所有相关采集进程
-# 将 PIDS 的 grep 规则扩展
-PIDS=$(ps aux | grep -E 'process_agent\.py|file_agent\.py|net_agent\.py|dns_agent\.py|kmod_agent\.py' | grep -v grep | awk '{print $2}')
+# 更新 grep 表达式以匹配所有 7 个 agent
+PIDS=$(ps aux | grep -E 'process_agent\.py|file_agent\.py|net_agent\.py|dns_agent\.py|kmod_agent\.py|memory_agent\.py|syscall_agent\.py' | grep -v grep | awk '{print $2}')
+
 if [ -z "$PIDS" ]; then
   echo "⚠️ 未发现正在运行的采集器进程。"
   exit 0
 fi
 
-echo "🛑 正在停止以下采集器进程："
+echo "🛑 正在停止以下 7 个采集器进程："
 echo "$PIDS"
 kill -9 $PIDS
 

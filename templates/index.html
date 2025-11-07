@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>OS Monitor 实时仪表盘</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.js"></script>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial, sans-serif; background-color: #1a1a1a; color: #e0e0e0; margin: 0; padding: 15px; }
+        h1 { text-align: center; color: #4CAF50; border-bottom: 2px solid #333; padding-bottom: 10px; }
+        .container {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: space-between;
+            width: 100%;
+        }
+        .column {
+            width: 13%; /* 7 列, 100/7 approx 14.2, use 13% + gap */
+            min-width: 280px;
+            height: 80vh;
+            background-color: #252525;
+            border: 1px solid #444;
+            border-radius: 5px;
+            margin: 5px;
+            display: flex;
+            flex-direction: column;
+            box-shadow: 0 0 10px rgba(0,0,0,0.5);
+        }
+        .column h2 {
+            text-align: center;
+            background-color: #333;
+            color: #eee;
+            margin: 0;
+            padding: 10px;
+            font-size: 1.1em;
+            border-top-left-radius: 5px;
+            border-top-right-radius: 5px;
+        }
+        .log-box {
+            flex-grow: 1;
+            overflow-y: auto;
+            padding: 10px;
+            font-size: 0.75em;
+            line-height: 1.4;
+            /* 倒序显示日志 */
+            display: flex;
+            flex-direction: column-reverse;
+        }
+        /* 滚轮样式 */
+        .log-box::-webkit-scrollbar { width: 8px; }
+        .log-box::-webkit-scrollbar-track { background: #252525; }
+        .log-box::-webkit-scrollbar-thumb { background: #555; border-radius: 4px; }
+        
+        .log-entry {
+            margin-bottom: 8px;
+            padding: 5px;
+            border-radius: 3px;
+            background-color: #303030;
+            border-left: 3px solid #ccc;
+        }
+        /* 为不同事件类型设置不同颜色 */
+        .log-process { border-color: #4CAF50; }
+        .log-file { border-color: #2196F3; }
+        .log-net { border-color: #ff9800; }
+        .log-dns { border-color: #9C27B0; }
+        .log-kmod { border-color: #F44336; }
+        .log-memory { border-color: #E91E63; }
+        .log-syscall { border-color: #00BCD4; }
+    </style>
+</head>
+<body>
+
+    <h1>OS Monitor 实时仪表盘</h1>
+    <div class="container">
+        <div class="column"><h2 style="color: #4CAF50">进程 (Process)</h2><div id="process-log" class="log-box"></div></div>
+        <div class="column"><h2 style="color: #2196F3">文件 I/O (File)</h2><div id="file-log" class="log-box"></div></div>
+        <div class="column"><h2 style="color: #ff9800">网络 (Net)</h2><div id="net-log" class="log-box"></div></div>
+        <div class="column"><h2 style="color: #9C27B0">DNS 查询 (DNS)</h2><div id="dns-log" class="log-box"></div></div>
+        <div class="column"><h2 style="color: #F44336">内核模块 (KMod)</h2><div id="kmod-log" class="log-box"></div></div>
+        <div class="column"><h2 style="color: #E91E63">内存 (Memory)</h2><div id="memory-log" class="log-box"></div></div>
+        <div class="column"><h2 style="color: #00BCD4">可疑调用 (Syscall)</h2><div id="syscall-log" class="log-box"></div></div>
+    </div>
+
+    <script>
+        // 连接到后端的 Socket.IO 服务器
+        const socket = io.connect('http://' + document.domain + ':' + location.port);
+
+        socket.on('connect', () => {
+            console.log('已连接到仪表盘后端');
+        });
+
+        const MAX_LOGS = 100; // 每个窗口保留的最大日志条数
+
+        /**
+         * 向指定的日志框中添加一条新日志。
+         * @param {string} boxId - 目标 div 的 ID
+         * @param {string} logHtml - 要插入的 HTML 字符串
+         * @param {string} logClass - (可选) CSS 类
+         */
+        function addLogEntry(boxId, logHtml, logClass = '') {
+            const logBox = document.getElementById(boxId);
+            if (!logBox) return;
+
+            const entry = document.createElement('div');
+            entry.className = 'log-entry ' + logClass;
+            entry.innerHTML = logHtml;
+
+            // 插入到顶部 (因为 flex-direction: column-reverse)
+            logBox.appendChild(entry);
+
+            // 保持日志数量上限
+            if (logBox.children.length > MAX_LOGS) {
+                logBox.removeChild(logBox.children[0]);
+            }
+        }
+
+        // --- 监听 7 个不同的事件流 ---
+
+        // 1. 监听 'process_event'
+        socket.on('process_event', function(data) {
+            const html = `<strong>${data.event.toUpperCase()}</strong> [${data.pid}] ${data.comm}<br>PPID: ${data.ppid}`;
+            addLogEntry('process-log', html, 'log-process');
+        });
+
+        // 2. 监听 'file_event'
+        socket.on('file_event', function(data) {
+            let html;
+            if (data.event === 'openat') {
+                html = `<strong>OPEN</strong> [${data.pid}]<br>${data.fname}`;
+            } else { // write
+                html = `<strong>WRITE</strong> [${data.pid}]<br>${data.count} 字节`;
+            }
+            addLogEntry('file-log', html, 'log-file');
+        });
+
+        // 3. 监听 'net_event'
+        socket.on('net_event', function(data) {
+            const html = `<strong>CONNECT</strong> [${data.pid}]<br>${data.daddr_str}:${data.dport}`;
+            addLogEntry('net-log', html, 'log-net');
+        });
+
+        // 4. 监听 'dns_event'
+        socket.on('dns_event', function(data) {
+            const html = `<strong>QUERY</strong> [${data.pid}] ${data.comm}<br>${data.host}`;
+            addLogEntry('dns-log', html, 'log-dns');
+        });
+
+        // 5. 监听 'kmod_event'
+        socket.on('kmod_event', function(data) {
+            const html = `<strong>LOAD</strong> [${data.pid}] ${data.comm}<br>${data.module_name}`;
+            addLogEntry('kmod-log', html, 'log-kmod');
+        });
+
+        // 6. 监听 'memory_event'
+        socket.on('memory_event', function(data) {
+            let html;
+            if (data.event === 'mprotect') {
+                html = `<strong>MPROTECT</strong> [${data.pid}] ${data.comm}<br><span style="color: #E91E63">${data.protection}</span>`;
+            } else { // vm_writev
+                html = `<strong>VM_WRITEV</strong> [${data.pid}] ${data.comm}<br>-> PID: ${data.target_pid}`;
+            }
+            addLogEntry('memory-log', html, 'log-memory');
+        });
+
+        // 7. 监听 'syscall_event'
+        socket.on('syscall_event', function(data) {
+            const html = `<strong>CALL</strong> [${data.pid}] ${data.comm}<br>${data.syscall_name}`;
+            addLogEntry('syscall-log', html, 'log-syscall');
+        });
+
+    </script>
+
+</body>
+</html>
