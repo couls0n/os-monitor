@@ -1,0 +1,24 @@
+# -----------------------------------------------------------------
+# Python 依赖 (用于 ML 管道和数据处理)
+# 
+# 重要提示：
+# 'bcc' (eBPF 库) 不在此文件中。
+# 它必须通过 'env_setup.sh' 脚本
+# 使用 apt (例如 'bpfcc-tools') 来安装，以匹配您的内核头文件。
+# -----------------------------------------------------------------
+
+# 用于 dataset/prepare_dataset.py, features/feature_builder.py, experiments/train_baseline.py
+pandas
+
+# 用于 features/feature_builder.py
+numpy
+
+# 用于 features/feature_builder.py 和 tools/visualize_tree.py
+networkx
+
+# 用于 experiments/train_baseline.py
+scikit-learn
+joblib
+
+# 用于 tools/visualize_tree.py
+matplotlib
