@@ -1,165 +1,148 @@
-# OS Monitor (7 维度 eBPF 采集平台)
+# OS-Monitor: Multi-Dimensional Runtime Security & Provenance Graph Framework
 
-本项目是一个全面的、基于 eBPF/BCC 的操作系统级别行为监控与分析管道。它旨在从隔离的 VM 中采集多维度数据，用于安全研究、高级威胁检测和机器学习。
+**OS-Monitor** 是一个针对 Linux 环境的\*\*内核级溯源图（Kernel-level Provenance Graph, KPG）\*\*构建与威胁检测框架。
 
-此增强版包括一个 7 维度的采集系统和一个由 `multitail` 驱动的高性能实时仪表盘。
+本项目基于 **eBPF (Extended Berkeley Packet Filter)** 技术，实现了 **7个维度** 的全景数据采集（用户态+内核态），并包含一套完整的**图神经网络 (GNN)** 行为分析管道。该平台旨在解决传统单点检测（如仅监控文件哈希）无法应对“无文件攻击”、“慢速攻击”和“数据窃取”的问题，支持构建 **EBPF-7D-Security-Dataset** 数据集。
 
-## 核心特性
+-----
 
-  * **7 维度 eBPF 采集**: 并发监控 7 个维度的系统事件：
-    1.  **进程**: `exec`, `fork`, `exit` 事件。
-    2.  **文件 I/O**: `openat`, `write` 事件。
-    3.  **网络**: TCP 连接 (`tcp_v4_connect`)。
-    4.  **DNS**: 用户态 `getaddrinfo` 域名查询。
-    5.  **内核模块**: `do_init_module` (Rootkit 检测)。
-    6.  **内存**: `mprotect` (PROT\_EXEC) 和 `process_vm_writev` (注入检测)。
-    7.  **可疑系统调用**: `ptrace`, `setuid`, `bpf` 等高风险调用。
-  * **高性能实时仪表盘**: 使用 `multitail` 在终端中实现的高性能、不卡顿的分屏日志监控。
-  * **机器学习管道**: 包含数据聚合、会话切分、图特征工程 和基线模型训练。
-  * **攻击模拟**: 包含用于生成测试数据的攻击脚本 (`forkbomb`, `ransom` 等)。
+## 📚 核心创新点 (Research Innovations)
 
-## 项目结构
+本项目对应论文《Multi-Dimensional Runtime Security Monitoring and Provenance Graph Analysis via eBPF》的工程实现，包含以下核心特性：
+
+1.  **7维度全景感知 (7-Dimensional eBPF Sensing)**:
+    突破传统监控局限，通过 7 个定制 Agent 并发采集：
+
+      * **Process**: 进程生命周期 (`fork`, `exec`, `exit`)。
+      * **Memory**: 内存代码注入与权限变更 (`mprotect`, `process_vm_writev`)。
+      * **Network**: TCP 连接状态 (`tcp_v4_connect`)。
+      * **File I/O**: 敏感文件读写 (`openat`, `write`)。
+      * **DNS**: 用户态域名查询语义 (`getaddrinfo`)。
+      * **Kmod**: 内核模块加载 (`do_init_module`)。
+      * **Syscall**: 高危系统调用序列 (`ptrace`, `setuid` 等)。
+
+2.  **动态溯源图构建 (Provenance Graph Construction)**:
+    利用 `graph_utils.py` 将离散的系统事件转化为有向图。通过进程派生关系（Parent-Child）和交互行为（Connect, Write），将攻击链路可视化、结构化，有效检测 APT 攻击和无文件攻击。
+
+3.  **图神经网络检测 (GNN-based Detection)**:
+    内置 GNN 训练管道 (`experiments/train_gnn_final.py`)，通过学习进程行为图的拓扑结构和节点语义（命令行、文件名、IP），实现对恶意会话的高精度分类。
+
+-----
+
+## 🛠 项目结构
 
 ```
 os-monitor/
-├── agent/                # 7 个 eBPF 采集器
-│   ├── process_agent.py
-│   ├── file_agent.py
-│   ├── net_agent.py
-│   ├── dns_agent.py
-│   ├── kmod_agent.py
-│   ├── memory_agent.py
-│   └── syscall_agent.py
-├── aggregator/           # 日志聚合脚本
-│   └── collector.py
-├── dataset/              # 数据集处理与攻击模拟
-│   ├── prepare_dataset.py
-│   └── simulate_attacks.py
-├── features/             # 特征工程 (含图构建)
-│   ├── feature_builder.py
-│   └── graph_utils.py
-├── experiments/          # 机器学习实验
-│   ├── train_baseline.py
-│   └── train_gnn.py
-├── tools/
-│   └── visualize_tree.py
-├── run_dashboard.sh      # (新) 一键启动采集器和 multitail 仪表盘
-├── start_monitoring.sh   # 仅启动 7 个 Agent
-├── stop_monitoring.sh    # 一键停止所有 Agent 和仪表盘
-├── env_setup.sh          # 环境安装脚本
-├── requirements.txt      # (新) Python 依赖
-└── README.md             # 本文件
+├── agent/                  # eBPF 采集层 (Kernel Probes/Tracepoints)
+│   ├── process_agent.py    # 进程树基础
+│   ├── memory_agent.py     # 内存注入检测 (关键创新)
+│   ├── dns_agent.py        # 隐蔽隧道检测
+│   └── ... (其他 4 个 Agent)
+├── dataset/                # 数据集构建与攻击模拟
+│   ├── simulate_attacks.py       # 基础攻击脚本
+│   ├── advanced_attack_simulator.py # 高级攻击场景 (勒索、无文件、Rootkit)
+│   ├── prepare_dataset.py        # 会话切分与清洗
+│   └── loader.py                 # 真实样本投放工具
+├── features/               # 特征工程层
+│   ├── graph_utils.py      # 核心算法：事件流 -> NetworkX 图
+│   └── feature_builder.py  # 图特征与统计特征提取
+├── experiments/            # 模型训练与评估层
+│   ├── train_baseline.py   # 基线模型 (RandomForest)
+│   └── train_gnn_final.py  # 核心模型 (GCN/GraphSAGE)
+├── run_dashboard.sh        # 实时监控仪表盘 (Multitail)
+└── env_setup.sh            # 环境依赖安装
 ```
 
-*(注意: `run_dashboard.sh` 脚本应从 `agent/` 目录移动到项目根目录，以便与 `start_monitoring.sh` 一起使用)*
+-----
 
-## 1\. 安装
+## 🚀 快速开始 (实验复现流程)
 
-**警告：仅在隔离的 VM（建议快照）上运行。**
+**环境要求**: Linux Kernel 5.4+ (推荐 Ubuntu 20.04/22.04), Python 3.8+, Root 权限。
 
-1.  **安装系统依赖 (BPF/BCC, Kernel Headers, Python)**：
-    (此脚本会安装 `bpfcc-tools`, `python3-pip`, `linux-headers` 等)
-
-    ```bash
-    sudo bash env_setup.sh
-    ```
-
-    *注意：`multitail` 依赖会由 `run_dashboard.sh` 自动安装。*
-
-2.  **安装 Python 依赖 (ML 管道)**：
-    (此命令将安装 `pandas`, `sklearn`, `networkx` 等)
-
-    ```bash
-    pip3 install -r requirements.txt
-    ```
-
-## 2\. 如何运行
-
-### 流程 A: 实时仪表盘 (推荐)
-
-这是验证 Agent 是否正常工作，并实时监控系统的最快方式。
-
-**1. 一键启动**
-此脚本会自动检查 `multitail`，启动所有 7 个 Agent，并打开仪表盘。
+### 1\. 环境搭建
 
 ```bash
+# 安装 BCC, Linux Headers, Python 依赖 (PyTorch, PyG, Pandas)
+sudo bash env_setup.sh
+```
+
+### 2\. 数据采集 (Data Acquisition)
+
+启动所有 Agent 进行数据收集。建议在隔离的虚拟机中运行。
+
+```bash
+# 方式 A: 启动后台采集 (推荐用于制作数据集)
+sudo bash start_monitoring.sh
+
+# 方式 B: 启动实时可视化仪表盘 (推荐用于调试)
 sudo bash run_dashboard.sh
 ```
 
-*您的终端将变为一个分屏的实时仪表盘。*
+,
 
-**2. (可选) 生成测试数据**
-打开**第 2 个终端**，运行攻击模拟脚本，观察仪表盘的实时变化：
+### 3\. 攻击模拟 (Attack Simulation)
+
+在采集开启时，运行攻击脚本以生成恶意样本数据。
 
 ```bash
-# 触发进程、网络和 DNS
-ping -c 1 google.com
-curl http://example.com
+# 模拟复杂攻击场景：勒索软件、DNS隧道、内存注入
+sudo python3 dataset/advanced_attack_simulator.py
 
-# 模拟勒索软件行为 (大量文件 I/O)
-sudo python3 dataset/simulate_attacks.py --attack ransom
+# 或者运行特定基础攻击
+sudo python3 dataset/simulate_attacks.py --attack forkbomb
 ```
 
-**3. 停止采集**
+,
 
-  * 在仪表盘终端（终端 1）按 `q` 键退出 `multitail`。
-  * 运行 `stop_monitoring.sh` 停止所有后台 Agent 进程：
-    ` bash     sudo bash stop_monitoring.sh      `
+*注：对于真实病毒样本，请使用 `dataset/loader.py` 并在断网沙箱中运行。*
 
-### 流程 B: 机器学习 (ML) 管道
+### 4\. 数据处理与图构建 (Graph Construction)
 
-此流程用于生成特征集以训练模型。
-
-**重要提示**: 原始的 `aggregator/collector.py` 和 `dataset/prepare_dataset.py` 脚本**必须**被修改。它们指向旧的日志目录 (`/var/log/os_monitor`)。
-
-**在运行前，请确保将这两个文件中指向日志目录的变量修改为:**
-`LOG_DIR = "/var/log/os_monitor_log"`
-
-**1. 采集数据**
-(见上文流程 A 的步骤 1)
+采集完成后，停止监控 (`sudo bash stop_monitoring.sh`)，然后进行数据聚合与图转化。
 
 ```bash
-# (或者，如果您不需要看仪表盘，只在后台收集)
-sudo bash start_monitoring.sh
-
-# ... (运行模拟攻击, 产生日志) ...
-
-sudo bash stop_monitoring.sh
-```
-
-**2. 聚合日志**
-(确保已修改 `collector.py` 中的 `LOG_DIR` 路径)
-
-```bash
+# 1. 聚合分散的 JSONL 日志
 python3 aggregator/collector.py --out file
-```
 
-*这将从 `/var/log/os_monitor_log` 读取所有 `.jsonl` 文件，并输出一个聚合日志文件 (例如 `logs/aggregated_....jsonl`)。*
-
-**3. 准备会话 (Session)**
-(确保已修改 `prepare_dataset.py` 中的 `default` input 路径)
-
-```bash
+# 2. 切分会话 (Sessionization)
+# --input 指向日志目录, --out 输出原始会话
 python3 dataset/prepare_dataset.py --input /var/log/os_monitor_log --out dataset/raw_sessions.pkl
-```
 
-*这将把事件流按 60 秒窗口切分为会话，输出 `dataset/raw_sessions.pkl`。*
-
-**4. 构建特征**
-此脚本会读取 `raw_sessions.pkl`，计算统计特征和图特征 (进程树)。
-
-```bash
+# 3. 特征工程与构图 (关键步骤)
+# 将会话转化为 Graph 对象，输出 dataset/graphs.pkl (用于 GNN) 和 features.parquet (用于 RF)
 python3 features/feature_builder.py --infile dataset/raw_sessions.pkl --outfile dataset/features.parquet
 ```
 
-**5. 训练模型**
-您需要一个 `labels.csv` 文件 (需手动创建)，该文件包含会话 `start` 时间戳和对应的 `label` (0=良性, 1=恶意)。
+,,
+
+### 5\. 模型训练与评估 (Evaluation)
+
+**训练图神经网络 (GNN):**
+这实现了论文中的图分类算法。需先准备 `dataset/labels.csv` (格式: `session_index,label`)。
+
+```bash
+python3 experiments/train_gnn_final.py --graphs dataset/graphs.pkl --labels dataset/labels.csv
+```
+
+**基线对比 (Random Forest):**
 
 ```bash
 python3 experiments/train_baseline.py --features dataset/features.parquet --labels dataset/labels.csv
 ```
 
-*这将训练一个随机森林模型并输出分类报告。*
+-----
 
-```
-```
+## 📊 数据集 (Dataset)
+
+本框架支持生成 **EBPF-7D-Security-Dataset**，包含以下几类数据：
+
+1.  **Benign**: 编译内核、Web 浏览、文件压缩等正常背景噪声。
+2.  **Ransomware**: 模拟 LockBit/WannaCry 的文件遍历与加密行为。
+3.  **Fileless**: 内存执行 (Memory Execution) 与代码注入。
+4.  **Exfiltration**: DNS 隐蔽隧道数据外传。
+
+-----
+
+## ⚠️ 免责声明
+
+本工具包含具有攻击性的模拟脚本 (`dataset/advanced_attack_simulator.py`) 和内核级监控功能。**严禁在生产环境或未授权的系统上运行。** 开发者不对因使用本工具造成的任何损坏负责。请仅在隔离的测试环境中使用。
