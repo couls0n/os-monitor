@@ -27,6 +27,21 @@ bash start_monitoring.sh
 echo "[*] 3/4 正在设置日志文件权限 (等待 2 秒)..."
 sleep 2 
 
+
+# --- [新增] 强制创建空日志文件，防止 multitail 报错 ---
+echo "[*] 正在预创建日志文件..."
+LOG_DIR="/var/log/os_monitor_log"
+mkdir -p $LOG_DIR
+touch $LOG_DIR/process.jsonl
+touch $LOG_DIR/fileio.jsonl
+touch $LOG_DIR/net.jsonl
+touch $LOG_DIR/dns.jsonl
+touch $LOG_DIR/kmod.jsonl
+touch $LOG_DIR/memory.jsonl
+touch $LOG_DIR/syscall.jsonl
+# --------------------------------------------------
+
+
 # 授予读取权限，以便 multitail (即使作为非 root) 也能读取
 chmod o+rx /var/log/os_monitor_log
 # 隐藏 'No such file or directory' 错误，因为某些 .jsonl 可能还未创建
