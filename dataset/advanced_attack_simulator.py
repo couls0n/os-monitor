@@ -18,6 +18,7 @@ import random
 import ctypes
 import sys
 import mmap
+import ctypes
 
 # --- 辅助函数 ---
 def log(msg):
@@ -99,6 +100,10 @@ def attack_dns_exfiltration():
         
     log(f"[+] DNS 窃取完成，发送了 {len(chunks)} 个查询包。")
 
+# 文件: dataset/advanced_attack_simulator.py
+
+# ... (在文件开头导入 ctypes)
+
 # --- 场景 3: 无文件/内存注入攻击 ---
 # 模拟修改内存权限为可执行 (触发 memory_agent)
 def attack_memory_injection():
@@ -106,6 +111,12 @@ def attack_memory_injection():
     
     # 1. 分配一块匿名内存
     libc = ctypes.CDLL(None)
+    
+    # === 修复代码开始 ===
+    # 明确定义 mmap 的返回类型为 void * (指针)，以确保地址正确传递
+    libc.mmap.restype = ctypes.c_void_p
+    # === 修复代码结束 ===
+    
     mmap_size = 4096
     # PROT_READ | PROT_WRITE = 3
     addr = libc.mmap(0, mmap_size, 3, 0x22, -1, 0)
@@ -114,28 +125,14 @@ def attack_memory_injection():
         log("[-] mmap failed")
         return
 
-    log(f"[*] 分配内存成功: {hex(addr)}")
+    # ... (后续代码不变)
+    
+    log(f"[*] 分配内存成功: {hex(addr)}") 
     
     # 2. 模拟写入 Shellcode (这里只写垃圾数据)
-    ctypes.memset(addr, 0x90, 1024) # NOP slide
+    # ctypes.memset(addr, 0x90, 1024) # 原来的调用
     
-    # 3. 关键步骤：修改内存权限为 PROT_READ | PROT_EXEC (0x5)
-    # 这会被 memory_agent 中的 trace_mprotect 捕获，且包含 PROT_EXEC 标志
-    PROT_EXEC = 0x4
-    PROT_READ = 0x1
-    res = libc.mprotect(addr, mmap_size, PROT_READ | PROT_EXEC)
-    
-    if res == 0:
-        log("[+] mprotect PROT_EXEC 成功 (应触发报警)")
-    else:
-        log("[-] mprotect failed")
-        
-    # 4. 模拟跨进程写入 (触发 process_vm_writev)
-    # 这里我们简单地尝试写入自己的进程，或者如果您有权限，可以尝试 fork 并写入子进程
-    # 为了演示简单，我们只触发 mprotect，这在论文中已经足够证明检测内存执行权限变更的能力
-    
-    time.sleep(1)
-
+    # ... (其他代码不变)
 # --- 场景 4: 模拟 Rootkit 加载 ---
 # 触发 kmod_agent
 def attack_rootkit_load():
