@@ -75,6 +75,7 @@ def main():
     def handle_event(cpu, data, size):
         event = b["events"].event(data)
         record = {
+            "source": "dns",
             "pid": int(event.pid),
             "comm": event.comm.decode('utf-8', 'replace').strip("\x00"),
             "ts_ns": int(event.ts_ns),

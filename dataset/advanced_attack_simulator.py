@@ -13,12 +13,11 @@ import os
 import time
 import socket
 import subprocess
-import threading
-import random
 import ctypes
-import sys
 import mmap
-import ctypes
+import random
+import sys
+import threading
 
 # --- 辅助函数 ---
 def log(msg):
@@ -109,30 +108,45 @@ def attack_dns_exfiltration():
 def attack_memory_injection():
     log("[*] 启动场景: Fileless Memory Injection")
     
-    # 1. 分配一块匿名内存
-    libc = ctypes.CDLL(None)
-    
-    # === 修复代码开始 ===
-    # 明确定义 mmap 的返回类型为 void * (指针)，以确保地址正确传递
+    libc = ctypes.CDLL(None, use_errno=True)
+    prot_read = 0x1
+    prot_write = 0x2
+    prot_exec = 0x4
+    map_private = 0x02
+    map_anonymous = 0x20
+
     libc.mmap.restype = ctypes.c_void_p
-    # === 修复代码结束 ===
-    
+    libc.mmap.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_size_t,
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_long,
+    ]
+    libc.mprotect.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int]
+    libc.mprotect.restype = ctypes.c_int
+    libc.munmap.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
+
     mmap_size = 4096
-    # PROT_READ | PROT_WRITE = 3
-    addr = libc.mmap(0, mmap_size, 3, 0x22, -1, 0)
-    
-    if addr == -1:
-        log("[-] mmap failed")
+    addr = libc.mmap(None, mmap_size, prot_read | prot_write, map_private | map_anonymous, -1, 0)
+    if addr in (None, ctypes.c_void_p(-1).value):
+        log(f"[-] mmap failed, errno={ctypes.get_errno()}")
         return
 
-    # ... (后续代码不变)
-    
-    log(f"[*] 分配内存成功: {hex(addr)}") 
-    
-    # 2. 模拟写入 Shellcode (这里只写垃圾数据)
-    # ctypes.memset(addr, 0x90, 1024) # 原来的调用
-    
-    # ... (其他代码不变)
+    log(f"[*] 分配内存成功: {hex(addr)}")
+
+    ctypes.memset(addr, 0x90, 1024)
+    log("[*] 已写入模拟 shellcode 字节")
+
+    ret = libc.mprotect(ctypes.c_void_p(addr), mmap_size, prot_read | prot_exec)
+    if ret != 0:
+        log(f"[-] mprotect failed, errno={ctypes.get_errno()}")
+    else:
+        log("[+] 已将匿名内存修改为可执行，memory_agent 应捕获 mmap + mprotect")
+
+    time.sleep(1)
+    libc.munmap(ctypes.c_void_p(addr), mmap_size)
 # --- 场景 4: 模拟 Rootkit 加载 ---
 # 触发 kmod_agent
 def attack_rootkit_load():

@@ -1,37 +1,58 @@
 #!/bin/bash
-# stop_monitoring.sh — 一键停止所有数据采集 Agent 和 multitail 仪表盘
-# sudo bash stop_monitoring.sh
+# stop_monitoring.sh
+# Gracefully stop agents, detector and the dashboard.
 
-# 确保脚本以 root 权限运行
+set -euo pipefail
+
 if [ "$EUID" -ne 0 ]; then
   echo "❌ 请使用 sudo 运行此脚本"
   exit 1
 fi
 
-# 定义要查找的进程模式
-# 1. 匹配所有 7 个 agent 脚本
-AGENT_PATTERN='process_agent\.py|file_agent\.py|net_agent\.py|dns_agent\.py|kmod_agent\.py|memory_agent\.py|syscall_agent\.py'
-# 2. 匹配由 run_dashboard.sh 启动的 multitail 进程
-DASHBOARD_PATTERN='multitail.*os_monitor_log'
+PATTERNS=(
+  "agent/process_agent.py"
+  "agent/file_agent.py"
+  "agent/net_agent.py"
+  "agent/dns_agent.py"
+  "agent/kmod_agent.py"
+  "agent/memory_agent.py"
+  "agent/syscall_agent.py"
+  "detector/realtime_blocker.py"
+  "multitail.*os_monitor_log"
+)
 
-# 查找所有相关进程的 PID
-PIDS=$(ps aux | grep -E "${AGENT_PATTERN}|${DASHBOARD_PATTERN}" | grep -v grep | awk '{print $2}')
+PIDS=()
+for pattern in "${PATTERNS[@]}"; do
+  while IFS= read -r pid; do
+    if [ -n "$pid" ]; then
+      PIDS+=("$pid")
+    fi
+  done < <(pgrep -f "$pattern" || true)
+done
 
-if [ -z "$PIDS" ]; then
-  echo "⚠️ 未发现正在运行的采集器或仪表盘进程。"
+if [ "${#PIDS[@]}" -eq 0 ]; then
+  echo "⚠️ 未发现正在运行的采集器、检测器或仪表盘。"
   exit 0
 fi
 
-echo "🛑 正在停止以下相关进程："
-# -f 标志会显示更详细的进程信息
-ps -f -p $PIDS
+PIDS=($(printf "%s\n" "${PIDS[@]}" | sort -u))
 
-echo "" # 换行
+echo "🛑 正在停止以下进程："
+ps -fp "${PIDS[@]}" || true
 
-# 使用 kill -9 强制停止
-kill -9 $PIDS
+kill "${PIDS[@]}" 2>/dev/null || true
+sleep 1
 
-echo "✅ 所有相关进程已停止。"
-echo "--------------------------------------"
-echo "可使用 'ps aux | grep agent' 验证停止状态"
-echo "--------------------------------------"
+REMAINING=()
+for pid in "${PIDS[@]}"; do
+  if kill -0 "$pid" 2>/dev/null; then
+    REMAINING+=("$pid")
+  fi
+done
+
+if [ "${#REMAINING[@]}" -gt 0 ]; then
+  echo "⚠️ 以下进程未响应 SIGTERM，升级为 SIGKILL： ${REMAINING[*]}"
+  kill -9 "${REMAINING[@]}" 2>/dev/null || true
+fi
+
+echo "✅ 已停止所有相关进程。"

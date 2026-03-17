@@ -1,21 +1,26 @@
 #!/bin/bash
-# ----------------------------------------------
 # check_status.sh
-# 用途：检查数据采集进程是否在运行
-# 作者：张忠硕
-# 日期：2025-10-29
-# ----------------------------------------------
+# Show the current status of agents and the real-time blocker.
 
-process_name="data_collector.py"
+set -euo pipefail
 
-# 查找进程
-pid=$(pgrep -f $process_name)
+PATTERNS=(
+  "agent/process_agent.py"
+  "agent/file_agent.py"
+  "agent/net_agent.py"
+  "agent/dns_agent.py"
+  "agent/kmod_agent.py"
+  "agent/memory_agent.py"
+  "agent/syscall_agent.py"
+  "detector/realtime_blocker.py"
+)
 
-if [ -z "$pid" ]; then
-    echo "❌ 数据采集进程（$process_name）未运行。"
-else
-    echo "✅ 数据采集进程（$process_name）正在运行，PID: $pid"
-    # 显示进程的详细信息
-    ps -fp $pid
-fi
-
+echo "=== OS-Monitor 运行状态 ==="
+for pattern in "${PATTERNS[@]}"; do
+  pid="$(pgrep -f "$pattern" | paste -sd "," - || true)"
+  if [ -n "$pid" ]; then
+    printf "✅ %-35s PID=%s\n" "$pattern" "$pid"
+  else
+    printf "❌ %-35s 未运行\n" "$pattern"
+  fi
+done

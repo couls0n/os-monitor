@@ -118,6 +118,7 @@ def main():
     def handle_event(cpu, data, size):
         event = b["events"].event(data)
         record = {
+            "source": "process",
             "pid": int(event.pid),
             "ppid": int(event.ppid),
             "comm": event.comm.decode('utf-8', 'replace').strip("\x00"),

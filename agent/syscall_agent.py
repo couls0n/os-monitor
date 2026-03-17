@@ -114,6 +114,7 @@ int trace_{syscall_name}(struct tracepoint__syscalls__sys_enter_{syscall_name} *
     def handle_event(cpu, data, size):
         event = b["events"].event(data)
         record = {
+            "source": "syscall",
             "pid": int(event.pid),
             "comm": event.comm.decode('utf-8', 'replace').strip("\x00"),
             "ts_ns": int(event.ts_ns),

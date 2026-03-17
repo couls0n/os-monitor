@@ -1,73 +1,154 @@
 #!/usr/bin/env python3
 """
 collector.py
-Simple aggregator that reads JSONL files from /var/log/os_monitor, deduplicates by
-(pid, ts_ns, event, comm), annotates with host metadata, and writes to a sqlite DB or merged JSONL.
+
+Normalize and merge raw agent JSONL files into either a canonical JSONL stream or
+an SQLite database. This keeps source/time fields aligned for downstream stages.
 """
+
+from __future__ import annotations
+
 import argparse
-import glob
 import json
 import os
 import sqlite3
-from datetime import datetime
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Dict, Iterable, List, Tuple
 
-LOG_DIR = "/var/log/os_monitor"
+ROOT_DIR = Path(__file__).resolve().parents[1]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
 
-parser = argparse.ArgumentParser()
-parser.add_argument('--out', choices=['sqlite','file'], default='file')
-parser.add_argument('--db', default='logs/events.db')
-args = parser.parse_args()
+from monitoring.constants import LOG_DIR, OUTPUT_DIR
+from monitoring.event_schema import load_normalized_events
 
-os.makedirs(os.path.dirname(args.db), exist_ok=True)
 
-files = glob.glob(os.path.join(LOG_DIR, '*.jsonl'))
-print(f"found files: {files}")
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--input", default=LOG_DIR)
+    parser.add_argument("--out", choices=["sqlite", "file"], default="file")
+    parser.add_argument("--db", default=os.path.join(OUTPUT_DIR, "events.db"))
+    return parser.parse_args()
 
-records = []
-seen = set()
-for path in files:
-    with open(path) as f:
-        for line in f:
-            try:
-                obj = json.loads(line)
-            except Exception:
-                continue
-            key = (obj.get('pid'), obj.get('ts_ns'), obj.get('event'), obj.get('comm'))
-            if key in seen:
-                continue
-            seen.add(key)
-            records.append(obj)
 
-print(f"collected {len(records)} events")
+def dedupe_key(event: Dict[str, object]) -> Tuple[object, ...]:
+    """Build a deduplication key for canonical events."""
+    return (
+        event.get("source"),
+        event.get("pid"),
+        event.get("ppid"),
+        event.get("ts_ns"),
+        event.get("timestamp"),
+        event.get("event_key"),
+        event.get("file_path"),
+        event.get("file_new_path"),
+        event.get("remote_ip"),
+        event.get("remote_port"),
+        event.get("dns_host"),
+        event.get("syscall_name"),
+        event.get("module_name"),
+    )
 
-if args.out == 'sqlite':
-    conn = sqlite3.connect(args.db)
-    c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS events (
-        pid INTEGER,
-        ppid INTEGER,
-        comm TEXT,
-        ts TEXT,
-        ts_ns INTEGER,
-        event INTEGER,
-        raw TEXT
-    )''')
-    for r in records:
-        c.execute('INSERT INTO events VALUES (?,?,?,?,?,?,?)', (
-            r.get('pid'),
-            r.get('ppid'),
-            r.get('comm'),
-            r.get('ts'),
-            r.get('ts_ns'),
-            r.get('event'),
-            json.dumps(r)))
-    conn.commit()
-    conn.close()
-    print("wrote to sqlite db:", args.db)
-else:
-    out_file = 'logs/aggregated_{}.jsonl'.format(datetime.utcnow().strftime('%Y%m%dT%H%M%SZ'))
-    os.makedirs('logs', exist_ok=True)
-    with open(out_file, 'w') as f:
-        for r in records:
-            f.write(json.dumps(r) + '\n')
-    print('wrote', out_file)
+
+def dedupe_events(events: Iterable[Dict[str, object]]) -> List[Dict[str, object]]:
+    """Return canonical events without duplicates."""
+    seen = set()
+    result = []
+    for event in events:
+        key = dedupe_key(event)
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(event)
+    return result
+
+
+def write_sqlite(events: Iterable[Dict[str, object]], db_path: str) -> None:
+    """Persist canonical events to SQLite."""
+    db = Path(db_path)
+    db.parent.mkdir(parents=True, exist_ok=True)
+
+    with sqlite3.connect(str(db)) as connection:
+        cursor = connection.cursor()
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS events (
+                source TEXT,
+                action TEXT,
+                event_key TEXT,
+                pid INTEGER,
+                ppid INTEGER,
+                comm TEXT,
+                timestamp TEXT,
+                ts_ns INTEGER,
+                file_path TEXT,
+                file_new_path TEXT,
+                write_bytes INTEGER,
+                remote_ip TEXT,
+                remote_port INTEGER,
+                dns_host TEXT,
+                target_pid INTEGER,
+                syscall_name TEXT,
+                module_name TEXT,
+                raw TEXT
+            )
+            """
+        )
+        for event in events:
+            cursor.execute(
+                """
+                INSERT INTO events VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    event.get("source"),
+                    event.get("action"),
+                    event.get("event_key"),
+                    event.get("pid"),
+                    event.get("ppid"),
+                    event.get("comm"),
+                    event.get("timestamp"),
+                    event.get("ts_ns"),
+                    event.get("file_path"),
+                    event.get("file_new_path"),
+                    event.get("write_bytes"),
+                    event.get("remote_ip"),
+                    event.get("remote_port"),
+                    event.get("dns_host"),
+                    event.get("target_pid"),
+                    event.get("syscall_name"),
+                    event.get("module_name"),
+                    json.dumps(event, ensure_ascii=False),
+                ),
+            )
+        connection.commit()
+
+    print("wrote to sqlite db:", str(db))
+
+
+def write_jsonl(events: Iterable[Dict[str, object]]) -> None:
+    """Persist canonical events to an aggregated JSONL file."""
+    Path(OUTPUT_DIR).mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    out_file = Path(OUTPUT_DIR) / f"aggregated_{timestamp}.jsonl"
+    with out_file.open("w", encoding="utf-8") as handle:
+        for event in events:
+            handle.write(json.dumps(event, ensure_ascii=False) + "\n")
+    print("wrote", str(out_file))
+
+
+def main() -> None:
+    args = parse_args()
+    events = load_normalized_events(args.input)
+    events = dedupe_events(events)
+    print(f"collected {len(events)} events from {args.input}")
+
+    if args.out == "sqlite":
+        write_sqlite(events, args.db)
+    else:
+        write_jsonl(events)
+
+
+if __name__ == "__main__":
+    main()

@@ -1,43 +1,58 @@
 #!/bin/bash
-# start_monitoring.sh — 一键启动所有 (7 个) 数据采集 Agent
-# sudo bash start_monitoring.sh
+# start_monitoring.sh
+# Start all eBPF agents and the optional real-time detector.
 
-# 确保脚本以 root 权限运行
+set -euo pipefail
+
 if [ "$EUID" -ne 0 ]; then
   echo "❌ 请使用 sudo 运行此脚本"
   exit 1
 fi
 
-# 定义日志输出目录 (修正为与 agent 脚本一致)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOG_DIR="/var/log/os_monitor_log"
-mkdir -p $LOG_DIR
+ENABLE_DETECTOR="${ENABLE_DETECTOR:-1}"
+DETECTOR_MODE="${DETECTOR_MODE:-detect}"
+DETECTOR_WINDOW_MS="${DETECTOR_WINDOW_MS:-500}"
+DETECTOR_BLOCK_SCORE="${DETECTOR_BLOCK_SCORE:-7}"
 
-# --- 启动原有 Agent ---
-nohup python3 agent/process_agent.py > $LOG_DIR/process_agent.log 2>&1 &
-echo "✅ 进程采集器已启动 (PID $!)"
+mkdir -p "$LOG_DIR"
+touch "$LOG_DIR/alerts.jsonl"
 
-nohup python3 agent/file_agent.py > $LOG_DIR/file_agent.log 2>&1 &
-echo "✅ 文件采集器已启动 (PID $!)"
+start_python() {
+  local label="$1"
+  local script_path="$2"
+  local log_name="$3"
 
-nohup python3 agent/net_agent.py > $LOG_DIR/net_agent.log 2>&1 &
-echo "✅ 网络采集器已启动 (PID $!)"
+  nohup python3 "$SCRIPT_DIR/$script_path" > "$LOG_DIR/$log_name" 2>&1 &
+  echo "✅ $label 已启动 (PID $!)"
+}
 
-# --- 启动新增 Agent ---
-nohup python3 agent/dns_agent.py > $LOG_DIR/dns_agent.log 2>&1 &
-echo "✅ DNS 采集器已启动 (PID $!)"
+echo "[*] 记录主机元数据..."
+python3 "$SCRIPT_DIR/aggregator/metadata_writer.py" > "$LOG_DIR/metadata_writer.log" 2>&1 || true
 
-nohup python3 agent/kmod_agent.py > $LOG_DIR/kmod_agent.log 2>&1 &
-echo "✅ 内核模块采集器已启动 (PID $!)"
+start_python "进程采集器" "agent/process_agent.py" "process_agent.log"
+start_python "文件采集器" "agent/file_agent.py" "file_agent.log"
+start_python "网络采集器" "agent/net_agent.py" "net_agent.log"
+start_python "DNS 采集器" "agent/dns_agent.py" "dns_agent.log"
+start_python "内核模块采集器" "agent/kmod_agent.py" "kmod_agent.log"
+start_python "内存采集器" "agent/memory_agent.py" "memory_agent.log"
+start_python "可疑系统调用采集器" "agent/syscall_agent.py" "syscall_agent.log"
 
-nohup python3 agent/memory_agent.py > $LOG_DIR/memory_agent.log 2>&1 &
-echo "✅ 内存采集器已启动 (PID $!)"
+if [ "$ENABLE_DETECTOR" = "1" ]; then
+  nohup python3 "$SCRIPT_DIR/detector/realtime_blocker.py" \
+    --mode "$DETECTOR_MODE" \
+    --window-ms "$DETECTOR_WINDOW_MS" \
+    --block-score "$DETECTOR_BLOCK_SCORE" \
+    > "$LOG_DIR/realtime_blocker.log" 2>&1 &
+  echo "✅ 实时检测器已启动 (PID $!, mode=$DETECTOR_MODE, window=${DETECTOR_WINDOW_MS}ms)"
+else
+  echo "ℹ️ 已跳过实时检测器 (ENABLE_DETECTOR=$ENABLE_DETECTOR)"
+fi
 
-nohup python3 agent/syscall_agent.py > $LOG_DIR/syscall_agent.log 2>&1 &
-echo "✅ 可疑系统调用采集器已启动 (PID $!)"
-
-# 显示运行状态
 echo "--------------------------------------"
-echo "📡 所有 7 个 Agent 已启动，日志输出目录：$LOG_DIR"
-echo "可使用 'ps aux | grep agent' 查看进程状态"
-echo "使用 'sudo bash stop_monitoring.sh' 可一键停止所有 Agent"
+echo "📡 采集目录：$LOG_DIR"
+echo "🔎 实时检测：$DETECTOR_MODE (设置 DETECTOR_MODE=block 可启用即时阻断)"
+echo "🛑 停止命令：sudo bash stop_monitoring.sh"
+echo "📋 状态查看：sudo bash check_status.sh"
 echo "--------------------------------------"

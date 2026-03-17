@@ -1,107 +1,158 @@
 #!/usr/bin/env python3
 """
 feature_builder.py
-Takes sessions (from dataset/raw_sessions.pkl) and extracts tabular features and graph-based features.
-Outputs a parquet file of features (one row per session) and a small graphs file (optional).
+
+Extracts sliding-window features and provenance graphs from normalized sessions.
+The output is suitable for both classical ML and graph learning experiments.
 """
+
+from __future__ import annotations
+
 import argparse
-import pickle
-import pandas as pd
-import numpy as np
-from datetime import datetime
 import os
-from features.graph_utils import build_process_tree
+import pickle
+import sys
+from collections import Counter
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, Iterable, List
+
 import networkx as nx
+import pandas as pd
 
-parser = argparse.ArgumentParser()
-parser.add_argument('--infile', required=True, help='raw sessions pickle')
-parser.add_argument('--outfile', dest='outfile', default='dataset/features.parquet')
-parser.add_argument('--graphs_out', dest='graphs_out', default='dataset/graphs.pkl')
-args = parser.parse_args()
+ROOT_DIR = Path(__file__).resolve().parents[1]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
 
-with open(args.infile, 'rb') as f:
-    sessions = pickle.load(f)
+from features.graph_utils import build_provenance_graph
+from monitoring.window_engine import (
+    ThresholdProfile,
+    aggregate_pid_metrics,
+    extract_window_metrics,
+    group_events_by_pid,
+    score_pid_metrics,
+    window_duration_seconds,
+)
 
-rows = []
-graphs = []
-for idx, s in enumerate(sessions):
-    evs = s['events']
-    # compute basic stats
-    start = datetime.fromisoformat(s['start'])
-    end = datetime.fromisoformat(s['end'])
-    duration = (end - start).total_seconds()
-    pids = set()
-    commands = {}
-    create_count = 0
-    exit_count = 0
-    write_bytes = 0
-    net_conns = 0
-    for e in evs:
-        if 'pid' in e and e['pid'] is not None:
-            try:
-                pids.add(int(e['pid']))
-            except Exception:
-                pass
-        if int(e.get('event') or 0) == 1:
-            create_count += 1
-        if int(e.get('event') or 0) == 3:
-            exit_count += 1
-        if int(e.get('event') or 0) == 2 and e.get('count'):
-            try:
-                write_bytes += int(e.get('count') or 0)
-            except Exception:
-                pass
-        if e.get('dport') is not None:
-            net_conns += 1
-        if e.get('comm'):
-            commands[e.get('comm')] = commands.get(e.get('comm'), 0) + 1
-    unique_cmds = len(commands)
-    top_cmd = sorted(commands.items(), key=lambda x: -x[1])[0][0] if commands else ''
 
-    # build process tree graph
-    G = build_process_tree(evs)
-    nodes = G.number_of_nodes()
-    edges = G.number_of_edges()
-    max_depth = 0
-    try:
-        if nodes > 0:
-            depths = []
-            roots = [n for n,d in G.in_degree() if G.in_degree(n)==0]
-            for r in roots:
-                # compute longest path from root r
-                lengths = nx.single_source_shortest_path_length(G, r)
-                if lengths:
-                    depths.append(max(lengths.values()))
-            max_depth = max(depths) if depths else 0
-    except Exception:
-        max_depth = 0
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--infile", required=True, help="raw sessions pickle")
+    parser.add_argument("--outfile", default="dataset/features.parquet")
+    parser.add_argument("--graphs-out", default="dataset/graphs.pkl")
+    return parser.parse_args()
+
+
+def graph_summary(graph: nx.MultiDiGraph) -> Dict[str, Any]:
+    """Summarize graph topology and node-type composition."""
+    node_types = Counter(attrs.get("node_type", "unknown") for _, attrs in graph.nodes(data=True))
+    process_subgraph = nx.DiGraph()
+    for node_id, attrs in graph.nodes(data=True):
+        if attrs.get("node_type") == "process":
+            process_subgraph.add_node(node_id, **attrs)
+    for source, target, attrs in graph.edges(data=True):
+        if (
+            graph.nodes[source].get("node_type") == "process"
+            and graph.nodes[target].get("node_type") == "process"
+            and attrs.get("source") == "process"
+        ):
+            process_subgraph.add_edge(source, target, **attrs)
+
+    max_process_depth = 0
+    if process_subgraph.number_of_nodes() > 0:
+        roots = [node for node, indegree in process_subgraph.in_degree() if indegree == 0]
+        for root in roots:
+            lengths = nx.single_source_shortest_path_length(process_subgraph, root)
+            if lengths:
+                max_process_depth = max(max_process_depth, max(lengths.values()))
+
+    summary = {
+        "graph_nodes": graph.number_of_nodes(),
+        "graph_edges": graph.number_of_edges(),
+        "graph_process_depth": max_process_depth,
+    }
+    for node_type, count in node_types.items():
+        summary[f"graph_nodes_{node_type}"] = count
+    return summary
+
+
+def flatten_counts(prefix: str, counts: Dict[str, Any]) -> Dict[str, Any]:
+    """Flatten a count dictionary into feature columns."""
+    flattened = {}
+    for key, value in counts.items():
+        column = key.replace(".", "_")
+        flattened[f"{prefix}_{column}"] = value
+    return flattened
+
+
+def build_row(session: Dict[str, Any], thresholds: ThresholdProfile) -> Dict[str, Any]:
+    """Build one tabular feature row for a session."""
+    events = session["events"]
+    per_pid_events = group_events_by_pid(events)
+    per_pid_metrics = {pid: extract_window_metrics(pid_events) for pid, pid_events in per_pid_events.items()}
+    aggregate_metrics = aggregate_pid_metrics(per_pid_metrics)
+    session_metrics = extract_window_metrics(events)
+    pid_scores = {pid: score_pid_metrics(metrics, thresholds)[0] for pid, metrics in per_pid_metrics.items()}
+
+    graph = build_provenance_graph(events)
 
     row = {
-        'start': s['start'],
-        'end': s['end'],
-        'duration': duration,
-        'num_pids': len(pids),
-        'create_count': create_count,
-        'exit_count': exit_count,
-        'write_bytes': write_bytes,
-        'net_conns': net_conns,
-        'unique_cmds': unique_cmds,
-        'top_cmd': top_cmd,
-        'graph_nodes': nodes,
-        'graph_edges': edges,
-        'graph_maxdepth': max_depth
+        "session_index": session.get("session_index"),
+        "start": session["start"],
+        "end": session["end"],
+        "window_ms": session.get("window_ms"),
+        "stride_ms": session.get("stride_ms"),
+        "event_count": session.get("event_count", len(events)),
+        "primary_pid": session.get("primary_pid"),
+        "duration_s": window_duration_seconds(events),
+        "unique_pids": len(per_pid_events),
+        "peak_pid_score": max(pid_scores.values()) if pid_scores else 0,
+        "mean_pid_score": (sum(pid_scores.values()) / len(pid_scores)) if pid_scores else 0.0,
     }
-    rows.append(row)
-    graphs.append({'session_index': idx, 'graph': G})
+    row.update(flatten_counts("session", session_metrics))
+    row.update(aggregate_metrics)
+    row.update(graph_summary(graph))
 
-# write features
-os.makedirs(os.path.dirname(args.outfile), exist_ok=True)
-df = pd.DataFrame(rows)
-df.to_parquet(args.outfile, index=False)
-print('wrote features to', args.outfile)
+    return row
 
-# write graphs pickle (optional; can be large)
-os.makedirs(os.path.dirname(args.graphs_out), exist_ok=True)
-with open(args.graphs_out, 'wb') as f:
-    pickle.dump(graphs, f)
-print('wrote graphs to', args.graphs_out)
+
+def main() -> None:
+    args = parse_args()
+
+    with open(args.infile, "rb") as handle:
+        sessions: List[Dict[str, Any]] = pickle.load(handle)
+
+    thresholds = ThresholdProfile()
+    rows: List[Dict[str, Any]] = []
+    graphs = []
+
+    for index, session in enumerate(sessions):
+        if session.get("session_index") is None:
+            session["session_index"] = index
+
+        row = build_row(session, thresholds)
+        rows.append(row)
+        graphs.append(
+            {
+                "session_index": session["session_index"],
+                "start": session["start"],
+                "end": session["end"],
+                "graph": build_provenance_graph(session["events"]),
+            }
+        )
+
+    out_path = Path(args.outfile)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    df = pd.DataFrame(rows)
+    df.to_parquet(out_path, index=False)
+    print("wrote features to", str(out_path))
+
+    graphs_out = Path(args.graphs_out)
+    graphs_out.parent.mkdir(parents=True, exist_ok=True)
+    with graphs_out.open("wb") as handle:
+        pickle.dump(graphs, handle)
+    print("wrote graphs to", str(graphs_out))
+
+
+if __name__ == "__main__":
+    main()

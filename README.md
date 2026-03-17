@@ -2,7 +2,7 @@
 
 **OS-Monitor** 是一个针对 Linux 环境的\*\*内核级溯源图（Kernel-level Provenance Graph, KPG）\*\*构建与威胁检测框架。
 
-本项目基于 **eBPF (Extended Berkeley Packet Filter)** 技术，实现了 **7个维度** 的全景数据采集（用户态+内核态），并包含一套完整的**图神经网络 (GNN)** 行为分析管道。该平台旨在解决传统单点检测（如仅监控文件哈希）无法应对“无文件攻击”、“慢速攻击”和“数据窃取”的问题，支持构建 **EBPF-7D-Security-Dataset** 数据集。
+本项目基于 **eBPF (Extended Berkeley Packet Filter)** 技术，实现了 **7个维度** 的全景数据采集（用户态+内核态），并补齐了**滑动时间窗口特征工程 + 用户态实时阻断**闭环。当前代码既支持离线构建 **EBPF-7D-Security-Dataset** 数据集，也支持在运行中按 PID 做短窗口行为聚合，并在满足阈值时进入告警/阻断流程。
 
 -----
 
@@ -25,7 +25,10 @@
     利用 `graph_utils.py` 将离散的系统事件转化为有向图。通过进程派生关系（Parent-Child）和交互行为（Connect, Write），将攻击链路可视化、结构化，有效检测 APT 攻击和无文件攻击。
 
 3.  **图神经网络检测 (GNN-based Detection)**:
-    内置 GNN 训练管道 (`experiments/train_gnn_final.py`)，通过学习进程行为图的拓扑结构和节点语义（命令行、文件名、IP），实现对恶意会话的高精度分类。
+    内置 GNN 训练管道 (`experiments/train_gnn_final.py`)，通过学习多维 Provenance Graph 的拓扑结构和节点语义（命令、文件、IP、DNS、内存、模块等），实现对恶意会话的分类。
+
+4.  **实时检测与阻断 (Real-time Detection & Blocking)**:
+    新增 `detector/realtime_blocker.py`，对 7 个 Agent 的 JSONL 流做 100ms/500ms 级别滑窗聚合，可基于文件突增、序列模式、可执行内存模式、DNS 突发等规则实时告警，并在 `block` 模式下直接终止可疑进程。
 
 -----
 
@@ -41,15 +44,17 @@ os-monitor/
 ├── dataset/                # 数据集构建与攻击模拟
 │   ├── simulate_attacks.py       # 基础攻击脚本
 │   ├── advanced_attack_simulator.py # 高级攻击场景 (勒索、无文件、Rootkit)
-│   ├── prepare_dataset.py        # 会话切分与清洗
+│   ├── prepare_dataset.py        # 滑动时间窗口切分
 │   └── loader.py                 # 真实样本投放工具
+├── detector/               # 实时检测与阻断
+│   └── realtime_blocker.py # 按 PID 滑窗特征计算并可即时 kill
 ├── features/               # 特征工程层
-│   ├── graph_utils.py      # 核心算法：事件流 -> NetworkX 图
-│   └── feature_builder.py  # 图特征与统计特征提取
+│   ├── graph_utils.py      # 核心算法：事件流 -> Provenance Graph
+│   └── feature_builder.py  # 序列特征、资源特征与图特征提取
 ├── experiments/            # 模型训练与评估层
 │   ├── train_baseline.py   # 基线模型 (RandomForest)
 │   └── train_gnn_final.py  # 核心模型 (GCN/GraphSAGE)
-├── run_dashboard.sh        # 实时监控仪表盘 (Multitail)
+├── run_dashboard.sh        # 实时监控仪表盘 (Multitail + alerts)
 └── env_setup.sh            # 环境依赖安装
 ```
 
@@ -58,6 +63,30 @@ os-monitor/
 ## 🚀 快速开始 (实验复现流程)
 
 **环境要求**: Linux Kernel 5.4+ (推荐 Ubuntu 20.04/22.04), Python 3.8+, Root 权限。
+
+### 极简工作流
+
+如果你在 Ubuntu 上希望尽量少记命令，推荐直接使用统一入口 `os_monitor.py`：
+
+```bash
+# 1) 一条命令启动监控栈
+sudo python3 os_monitor.py up --mode detect
+
+# 2) 一条命令启动并直接打开仪表盘
+sudo python3 os_monitor.py watch --mode block
+
+# 3) 一条命令完成：启动 -> 跑高级攻击场景 -> 停止 -> 自动构建特征
+sudo python3 os_monitor.py quick --scenario advanced --mode block --build
+
+# 4) 一条命令完成：启动 -> 跑指定攻击 -> 停止 -> 自动构建特征
+sudo python3 os_monitor.py quick --scenario attack --attack ransom --mode detect --build
+
+# 5) 查看状态 / 停止
+python3 os_monitor.py status
+sudo python3 os_monitor.py down
+```
+
+`quick` 命令默认会把旧日志归档后再开始新一轮运行，适合做数据集采集和复现实验。
 
 ### 1\. 环境搭建
 
@@ -71,11 +100,14 @@ sudo bash env_setup.sh
 启动所有 Agent 进行数据收集。建议在隔离的虚拟机中运行。
 
 ```bash
-# 方式 A: 启动后台采集 (推荐用于制作数据集)
-sudo bash start_monitoring.sh
+# 方式 A: 推荐，统一入口启动后台采集 + detect 模式实时分析
+sudo python3 os_monitor.py up --mode detect
 
-# 方式 B: 启动实时可视化仪表盘 (推荐用于调试)
-sudo bash run_dashboard.sh
+# 方式 B: 启动后台采集 + block 模式即时阻断
+sudo python3 os_monitor.py up --mode block
+
+# 方式 C: 启动实时可视化仪表盘 (推荐用于调试)
+sudo python3 os_monitor.py watch --mode detect
 ```
 
 ,
@@ -98,19 +130,25 @@ sudo python3 dataset/simulate_attacks.py --attack forkbomb
 
 ### 4\. 数据处理与图构建 (Graph Construction)
 
-采集完成后，停止监控 (`sudo bash stop_monitoring.sh`)，然后进行数据聚合与图转化。
+采集完成后，停止监控 (`sudo python3 os_monitor.py down`)，然后进行数据聚合与图转化。
 
 ```bash
 # 1. 聚合分散的 JSONL 日志
 python3 aggregator/collector.py --out file
 
-# 2. 切分会话 (Sessionization)
-# --input 指向日志目录, --out 输出原始会话
-python3 dataset/prepare_dataset.py --input /var/log/os_monitor_log --out dataset/raw_sessions.pkl
+# 2. 切分滑动窗口 (Sessionization)
+# 默认 500ms 窗口 / 250ms 步长；也可改成 100ms / 50ms
+python3 dataset/prepare_dataset.py --input /var/log/os_monitor_log --out dataset/raw_sessions.pkl --window-ms 500 --stride-ms 250
 
 # 3. 特征工程与构图 (关键步骤)
 # 将会话转化为 Graph 对象，输出 dataset/graphs.pkl (用于 GNN) 和 features.parquet (用于 RF)
-python3 features/feature_builder.py --infile dataset/raw_sessions.pkl --outfile dataset/features.parquet
+python3 features/feature_builder.py --infile dataset/raw_sessions.pkl --outfile dataset/features.parquet --graphs-out dataset/graphs.pkl
+```
+
+也可以直接用统一入口离线构建：
+
+```bash
+python3 os_monitor.py build --input /var/log/os_monitor_log --out-dir runs/manual_build
 ```
 
 ,,
@@ -118,7 +156,7 @@ python3 features/feature_builder.py --infile dataset/raw_sessions.pkl --outfile 
 ### 5\. 模型训练与评估 (Evaluation)
 
 **训练图神经网络 (GNN):**
-这实现了论文中的图分类算法。需先准备 `dataset/labels.csv` (格式: `session_index,label`)。
+需先准备 `dataset/labels.csv` (推荐格式: `session_index,label`)。
 
 ```bash
 python3 experiments/train_gnn_final.py --graphs dataset/graphs.pkl --labels dataset/labels.csv

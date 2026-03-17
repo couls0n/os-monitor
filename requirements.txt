@@ -9,6 +9,7 @@
 
 # 用于 dataset/prepare_dataset.py, features/feature_builder.py, experiments/train_baseline.py
 pandas
+pyarrow
 
 # 用于 features/feature_builder.py
 numpy

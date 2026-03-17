@@ -25,7 +25,11 @@ def main():
     out_file = os.path.join(OUTPUT_DIR, f'aggregated_{timestamp}.jsonl')
     
     # 获取所有 jsonl 文件
-    files = glob.glob(os.path.join(LOG_DIR, '*.jsonl'))
+    files = [
+        path
+        for path in glob.glob(os.path.join(LOG_DIR, '*.jsonl'))
+        if not path.endswith('alerts.jsonl')
+    ]
     print(f"[*] Found files: {files}")
     
     if not files:
@@ -54,13 +58,19 @@ def main():
                             except json.JSONDecodeError:
                                 continue
                             
-                            # 提取去重键 (与原版逻辑一致)
-                            # Key: (pid, ts_ns, event, comm)
+                            # 提取去重键
                             key = (
+                                obj.get('source'),
                                 obj.get('pid'), 
+                                obj.get('ppid'),
                                 obj.get('ts_ns'), 
                                 obj.get('event'), 
-                                obj.get('comm')
+                                obj.get('comm'),
+                                obj.get('fname'),
+                                obj.get('new_fname'),
+                                obj.get('host'),
+                                obj.get('daddr_str'),
+                                obj.get('dport'),
                             )
                             
                             if key in seen:

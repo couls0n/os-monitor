@@ -1,37 +1,54 @@
 #!/usr/bin/env python3
-"""
-metadata_writer.py
-Write host/environment metadata to the log dir to help reproducibility.
-"""
-import platform
-import subprocess
+"""Write host/environment metadata alongside the collected raw logs."""
+
+from __future__ import annotations
+
 import json
 import os
+import platform
+import subprocess
+import sys
+from pathlib import Path
 
-OUT_DIR = "/var/log/os_monitor"
-os.makedirs(OUT_DIR, exist_ok=True)
-OUT_FILE = os.path.join(OUT_DIR, "metadata.json")
+ROOT_DIR = Path(__file__).resolve().parents[1]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
 
-def gather():
-    meta = {}
-    meta['uname'] = platform.uname()._asdict()
+from monitoring.constants import LOG_DIR
+
+
+OUT_DIR = Path(LOG_DIR)
+OUT_DIR.mkdir(parents=True, exist_ok=True)
+OUT_FILE = OUT_DIR / "metadata.json"
+
+
+def gather() -> dict[str, object]:
+    """Collect reproducibility metadata for the current host."""
+    meta = {"uname": platform.uname()._asdict()}
+
     try:
-        dpkg = subprocess.check_output(['dpkg','-l']).decode('utf-8', errors='ignore')
-        meta['packages_head'] = '\n'.join(dpkg.splitlines()[:50])
+        dpkg = subprocess.check_output(["dpkg", "-l"], stderr=subprocess.DEVNULL)
+        meta["packages_head"] = "\n".join(
+            dpkg.decode("utf-8", errors="ignore").splitlines()[:50]
+        )
     except Exception:
-        meta['packages_head'] = ''
+        meta["packages_head"] = ""
+
     try:
-        with open('/proc/version', 'r') as f:
-            meta['proc_version'] = f.read().strip()
+        with open("/proc/version", "r", encoding="utf-8") as handle:
+            meta["proc_version"] = handle.read().strip()
     except Exception:
-        meta['proc_version'] = ''
+        meta["proc_version"] = ""
+
     return meta
 
-def write():
-    meta = gather()
-    with open(OUT_FILE, 'w') as f:
-        json.dump(meta, f, indent=2)
-    print("wrote metadata to", OUT_FILE)
+
+def write() -> None:
+    """Write metadata to disk."""
+    with OUT_FILE.open("w", encoding="utf-8") as handle:
+        json.dump(gather(), handle, indent=2, ensure_ascii=False)
+    print("wrote metadata to", str(OUT_FILE))
+
 
 if __name__ == "__main__":
     write()

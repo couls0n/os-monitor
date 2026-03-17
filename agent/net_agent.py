@@ -27,6 +27,7 @@ struct data_t {
     int family;
     u16 dport;
     u32 daddr;
+    char comm[TASK_COMM_LEN];
 };
 
 BPF_PERF_OUTPUT(events);
@@ -42,6 +43,7 @@ int trace_connect(struct pt_regs *ctx, struct sock *sk) {
     data.pid = bpf_get_current_pid_tgid() >> 32;
     data.ts_ns = bpf_ktime_get_ns();
     data.family = sk->__sk_common.skc_family;
+    bpf_get_current_comm(&data.comm, sizeof(data.comm));
     events.perf_submit(ctx, &data, sizeof(data));
     return 0;
 }
@@ -84,17 +86,23 @@ def main():
     def handle_event(cpu, data, size):
         event = b["events"].event(data)
         record = {
+            "source": "net",
             "pid": int(event.pid),
+            "comm": event.comm.decode('utf-8', 'replace').strip("\x00"),
             "ts_ns": int(event.ts_ns),
             "family": int(event.family),
             "dport": int(event.dport),
             "daddr": int(event.daddr),
             "daddr_str": ipv4_from_int(int(event.daddr)),
+            "event": "connect",
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
 
         # 控制台打印日志
-        print(f"[NET] PID={record['pid']} -> {record['daddr_str']}:{record['dport']}")
+        print(
+            f"[NET] PID={record['pid']} comm={record['comm']} "
+            f"-> {record['daddr_str']}:{record['dport']}"
+        )
 
         write_record(record)
 

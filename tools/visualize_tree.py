@@ -1,33 +1,68 @@
 #!/usr/bin/env python3
-"""
-visualize_tree.py
-Visualize process tree from a single session (load pickled sessions).
-Usage:
-  python3 tools/visualize_tree.py dataset/raw_sessions.pkl 0
-"""
+"""Visualize either the process tree or full provenance graph for one session."""
+
+from __future__ import annotations
+
+import argparse
 import pickle
-import networkx as nx
-import matplotlib.pyplot as plt
 import sys
-from features.graph_utils import build_process_tree
+from pathlib import Path
 
-if len(sys.argv) < 2:
-    print("Usage: python3 tools/visualize_tree.py <raw_sessions.pkl> [session_index]")
-    sys.exit(1)
+import matplotlib.pyplot as plt
+import networkx as nx
 
-path = sys.argv[1]
-session_index = int(sys.argv[2]) if len(sys.argv) > 2 else 0
+ROOT_DIR = Path(__file__).resolve().parents[1]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
 
-with open(path, 'rb') as f:
-    sessions = pickle.load(f)
+from features.graph_utils import build_process_tree, build_provenance_graph
 
-s = sessions[session_index]
-G = build_process_tree(s['events'])
-plt.figure(figsize=(10, 8))
-pos = nx.spring_layout(G, seed=42)
-nx.draw(G, pos, with_labels=False, node_size=40, arrows=True)
-# annotate some nodes
-labels = {n: (d.get('comm') or '')[:10] for n, d in G.nodes(data=True)}
-nx.draw_networkx_labels(G, pos, labels, font_size=8)
-plt.title(f"Process tree for session {session_index} ({s['start']} -> {s['end']})")
-plt.show()
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("sessions")
+    parser.add_argument("session_index", type=int, nargs="?", default=0)
+    parser.add_argument("--mode", choices=["process", "provenance"], default="provenance")
+    return parser.parse_args()
+
+
+def main() -> None:
+    args = parse_args()
+
+    with open(args.sessions, "rb") as handle:
+        sessions = pickle.load(handle)
+
+    session = sessions[args.session_index]
+    if args.mode == "process":
+        graph = build_process_tree(session["events"])
+    else:
+        graph = build_provenance_graph(session["events"])
+
+    plt.figure(figsize=(12, 9))
+    pos = nx.spring_layout(graph, seed=42)
+    node_colors = []
+    for _, attrs in graph.nodes(data=True):
+        node_type = attrs.get("node_type")
+        if node_type == "process":
+            node_colors.append("#1f77b4")
+        elif node_type == "file":
+            node_colors.append("#ff7f0e")
+        elif node_type == "network":
+            node_colors.append("#2ca02c")
+        elif node_type == "dns":
+            node_colors.append("#9467bd")
+        elif node_type == "memory":
+            node_colors.append("#d62728")
+        else:
+            node_colors.append("#7f7f7f")
+
+    nx.draw(graph, pos, with_labels=False, node_size=90, node_color=node_colors, arrows=True)
+    labels = {node: attrs.get("label", "")[:18] for node, attrs in graph.nodes(data=True)}
+    nx.draw_networkx_labels(graph, pos, labels, font_size=7)
+    plt.title(f"{args.mode} graph for session {args.session_index} ({session['start']} -> {session['end']})")
+    plt.tight_layout()
+    plt.show()
+
+
+if __name__ == "__main__":
+    main()
