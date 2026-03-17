@@ -129,7 +129,16 @@ def build_workload_command(args: argparse.Namespace) -> Optional[List[str]]:
             raise SystemExit("--scenario attack 时必须提供 --attack")
         return [python, str(ROOT_DIR / "dataset" / "simulate_attacks.py"), "--attack", args.attack]
     if args.scenario == "loader":
-        command = [python, str(ROOT_DIR / "dataset" / "loader.py")]
+        command = [
+            python,
+            str(ROOT_DIR / "dataset" / "loader.py"),
+            "--malware-dir",
+            args.malware_dir,
+            "--target-dir",
+            args.target_dir,
+            "--timeout",
+            str(args.sample_timeout),
+        ]
         if args.sample:
             command += ["--sample", args.sample]
         return command
@@ -239,6 +248,22 @@ def build_outputs(args: argparse.Namespace, run_id: str, input_dir: Path) -> Pat
     return out_dir
 
 
+def runtime_event_count(input_dir: Path) -> int:
+    """Count collected raw events, excluding alert files."""
+    total = 0
+    for path in input_dir.glob("*.jsonl"):
+        if path.name == "alerts.jsonl":
+            continue
+        try:
+            with path.open("r", encoding="utf-8") as handle:
+                for line in handle:
+                    if line.strip():
+                        total += 1
+        except OSError:
+            continue
+    return total
+
+
 def build_only(args: argparse.Namespace) -> None:
     """Offline build command for a log directory."""
     out_dir = build_outputs(args, run_id=args.run_id or now_tag(), input_dir=Path(args.input))
@@ -275,8 +300,13 @@ def quick_run(args: argparse.Namespace) -> None:
             stop_stack(args)
 
     if args.build:
-        out_dir = build_outputs(args, run_id=run_id, input_dir=LOG_DIR)
-        print(f"[+] 本次运行产物已输出到: {out_dir}")
+        event_count = runtime_event_count(LOG_DIR)
+        if event_count > 0:
+            out_dir = build_outputs(args, run_id=run_id, input_dir=LOG_DIR)
+            print(f"[+] 本次运行产物已输出到: {out_dir}")
+        else:
+            print("[!] 未检测到任何原始事件，已跳过 build。")
+            print("[!] 请优先检查样本路径、执行命令、Agent 挂载和运行权限。")
 
     if workload_rc not in (None, 0):
         raise SystemExit(workload_rc)
@@ -336,6 +366,9 @@ def parse_args() -> argparse.Namespace:
     )
     quick_parser.add_argument("--attack", choices=["forkbomb", "ransom", "slow-breach", "scan"], default=None)
     quick_parser.add_argument("--sample", default=None, help="sample filename for --scenario loader")
+    quick_parser.add_argument("--malware-dir", default="dataset/malware_samples")
+    quick_parser.add_argument("--target-dir", default="/tmp/documents_to_encrypt")
+    quick_parser.add_argument("--sample-timeout", type=int, default=60)
     quick_parser.add_argument("--command", default=None, help="custom shell command to run instead of a built-in scenario")
     quick_parser.add_argument("--duration", type=float, default=0.0, help="force-stop the workload after N seconds")
     quick_parser.add_argument("--post-wait", type=float, default=2.0)
