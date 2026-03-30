@@ -21,7 +21,7 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 from monitoring.constants import DEFAULT_STRIDE_MS, DEFAULT_WINDOW_MS, LOG_DIR
-from monitoring.event_schema import load_normalized_events
+from monitoring.event_schema import load_normalized_events, parse_timestamp
 from monitoring.window_engine import event_time_seconds
 
 
@@ -61,6 +61,39 @@ def iso_from_seconds(seconds_value: float) -> str:
     return datetime.fromtimestamp(seconds_value, tz=timezone.utc).isoformat()
 
 
+def build_wall_time_converter(events: List[Dict[str, Any]], event_times: List[float]):
+    """Map monotonic window offsets back to wall-clock timestamps."""
+    if not events or not event_times:
+        return None
+
+    first_event_time = parse_timestamp(events[0].get("timestamp"))
+    if first_event_time is None:
+        return None
+
+    base_wall = first_event_time.timestamp()
+    base_timeline = event_times[0]
+
+    def convert(timeline_seconds: float) -> tuple[str, float]:
+        wall_seconds = base_wall + (timeline_seconds - base_timeline)
+        return iso_from_seconds(wall_seconds), wall_seconds
+
+    return convert
+
+
+def fallback_window_bounds(window_events: List[Dict[str, Any]]) -> tuple[str | None, float | None, str | None, float | None]:
+    """Fall back to event timestamps when a wall-clock converter is unavailable."""
+    if not window_events:
+        return None, None, None, None
+
+    start_dt = parse_timestamp(window_events[0].get("timestamp"))
+    end_dt = parse_timestamp(window_events[-1].get("timestamp"))
+    start_iso = start_dt.isoformat() if start_dt else None
+    end_iso = end_dt.isoformat() if end_dt else None
+    start_ts = start_dt.timestamp() if start_dt else None
+    end_ts = end_dt.timestamp() if end_dt else None
+    return start_iso, start_ts, end_iso, end_ts
+
+
 def build_windows(
     events: List[Dict[str, Any]],
     window_ms: int,
@@ -82,6 +115,7 @@ def build_windows(
     end_time = event_times[-1]
     sessions: List[Dict[str, Any]] = []
     session_index = 0
+    wall_time_converter = build_wall_time_converter(events, event_times)
 
     while cursor <= end_time:
         while left < len(events) and event_times[left] < cursor:
@@ -101,11 +135,20 @@ def build_windows(
             if pid_counter:
                 dominant_pid = max(pid_counter.items(), key=lambda item: item[1])[0]
 
+            if wall_time_converter is not None:
+                start_iso, start_ts = wall_time_converter(cursor)
+                end_iso, end_ts = wall_time_converter(cursor + window_s)
+            else:
+                start_iso, start_ts, end_iso, end_ts = fallback_window_bounds(window_events)
+
             sessions.append(
                 {
                     "session_index": session_index,
-                    "start": iso_from_seconds(cursor),
-                    "end": iso_from_seconds(cursor + window_s),
+                    "timeline_index": session_index,
+                    "start": start_iso,
+                    "end": end_iso,
+                    "start_ts": start_ts,
+                    "end_ts": end_ts,
                     "window_ms": window_ms,
                     "stride_ms": stride_ms,
                     "event_count": len(window_events),

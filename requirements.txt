@@ -23,3 +23,6 @@ joblib
 
 # 用于 tools/visualize_tree.py
 matplotlib
+
+# 用于 tests/
+pytest

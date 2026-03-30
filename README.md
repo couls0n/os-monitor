@@ -54,7 +54,7 @@ os-monitor/
 ├── experiments/            # 模型训练与评估层
 │   ├── train_baseline.py   # 基线模型 (RandomForest)
 │   └── train_gnn_final.py  # 核心模型 (GCN/GraphSAGE)
-├── run_dashboard.sh        # 实时监控仪表盘 (Multitail + alerts)
+├── os_monitor.py           # 唯一运维入口：start/stop/status/watch/quick/build
 └── env_setup.sh            # 环境依赖安装
 ```
 
@@ -66,32 +66,43 @@ os-monitor/
 
 ### 极简工作流
 
-如果你在 Ubuntu 上希望尽量少记命令，推荐直接使用统一入口 `os_monitor.py`：
+如果你在 Ubuntu 上希望尽量少记命令，推荐只记这一套统一入口 `os_monitor.py`：
 
 ```bash
-# 1) 一条命令启动监控栈
-sudo python3 os_monitor.py up --mode detect
+# 1) 启动后台监控栈
+sudo python3 os_monitor.py start --mode detect
 
-# 2) 一条命令启动并直接打开仪表盘
-sudo python3 os_monitor.py watch --mode block
+# 2) 查看运行状态
+python3 os_monitor.py status
 
-# 3) 一条命令完成：启动 -> 跑高级攻击场景 -> 停止 -> 自动构建特征
+# 3) 打开实时仪表盘；如果监控栈还没启动，会自动拉起
+python3 os_monitor.py watch
+
+# 4) 一条命令完成：启动 -> 跑高级攻击场景 -> 停止 -> 自动构建特征
 sudo python3 os_monitor.py quick --scenario advanced --mode block --build
 
-# 4) 一条命令完成：启动 -> 跑指定攻击 -> 停止 -> 自动构建特征
+# 5) 一条命令完成：启动 -> 跑指定攻击 -> 停止 -> 自动构建特征
 sudo python3 os_monitor.py quick --scenario attack --attack ransom --mode detect --build
 
-# 5) 查看状态 / 停止
-python3 os_monitor.py status
-sudo python3 os_monitor.py down
+# 6) 停止监控栈
+sudo python3 os_monitor.py stop
 ```
 
 `quick` 命令默认会把旧日志归档后再开始新一轮运行，适合做数据集采集和复现实验。
 
+推荐的启动流程只有这一条：
+
+1. `sudo python3 os_monitor.py start --mode detect`
+2. `python3 os_monitor.py status`
+3. `python3 os_monitor.py watch`
+4. `sudo python3 os_monitor.py stop`
+
 ### 1\. 环境搭建
 
 ```bash
-# 安装 BCC, Linux Headers, Python 依赖 (PyTorch, PyG, Pandas)
+# 安装 BCC, Linux Headers, Python 依赖
+# 默认会一并安装 GNN 依赖 (torch / torch_geometric)。
+# 如果你只想跑采集 + 特征 + RF，可用 `INSTALL_GNN=0 sudo bash env_setup.sh`
 sudo bash env_setup.sh
 ```
 
@@ -101,16 +112,14 @@ sudo bash env_setup.sh
 
 ```bash
 # 方式 A: 推荐，统一入口启动后台采集 + detect 模式实时分析
-sudo python3 os_monitor.py up --mode detect
+sudo python3 os_monitor.py start --mode detect
 
 # 方式 B: 启动后台采集 + block 模式即时阻断
-sudo python3 os_monitor.py up --mode block
+sudo python3 os_monitor.py start --mode block
 
 # 方式 C: 启动实时可视化仪表盘 (推荐用于调试)
-sudo python3 os_monitor.py watch --mode detect
+python3 os_monitor.py watch
 ```
-
-,
 
 ### 3\. 攻击模拟 (Attack Simulation)
 
@@ -124,13 +133,11 @@ sudo python3 dataset/advanced_attack_simulator.py
 sudo python3 dataset/simulate_attacks.py --attack forkbomb
 ```
 
-,
-
 *注：对于真实病毒样本，请使用 `dataset/loader.py` 并在断网沙箱中运行。*
 
 ### 4\. 数据处理与图构建 (Graph Construction)
 
-采集完成后，停止监控 (`sudo python3 os_monitor.py down`)，然后进行数据聚合与图转化。
+采集完成后，停止监控 (`sudo python3 os_monitor.py stop`)，然后进行数据聚合与图转化。
 
 ```bash
 # 1. 聚合分散的 JSONL 日志
@@ -151,8 +158,6 @@ python3 features/feature_builder.py --infile dataset/raw_sessions.pkl --outfile 
 python3 os_monitor.py build --input /var/log/os_monitor_log --out-dir runs/manual_build
 ```
 
-,,
-
 ### 5\. 模型训练与评估 (Evaluation)
 
 **训练图神经网络 (GNN):**
@@ -167,6 +172,10 @@ python3 experiments/train_gnn_final.py --graphs dataset/graphs.pkl --labels data
 ```bash
 python3 experiments/train_baseline.py --features dataset/features.parquet --labels dataset/labels.csv
 ```
+
+训练脚本默认会先对重叠滑窗做降采样，再优先采用时间顺序 holdout，避免 500ms/250ms 这类重叠窗口在 train/test 两侧重复泄漏。如果时间切分会把某个类别完全挤出训练集，脚本会自动回退到随机切分并打印提示。
+
+实时阻断器默认发送 `SIGTERM`，并保护 root 进程、监控栈自身以及常见系统关键进程；如需更激进的策略，可显式传入 `--signal SIGKILL` 或 `--allow-root-block`。
 
 -----
 

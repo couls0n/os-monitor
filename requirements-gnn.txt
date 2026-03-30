@@ -1,0 +1,12 @@
+# -----------------------------------------------------------------
+# GNN 依赖
+#
+# 说明：
+# 1. torch CPU 轮子通过官方 PyTorch 索引安装。
+# 2. torch_geometric 仍通过 pip 安装；在少数平台上如需指定
+#    额外 wheel 源，可将 INSTALL_GNN=0 后手动安装。
+# -----------------------------------------------------------------
+
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch
+torch_geometric

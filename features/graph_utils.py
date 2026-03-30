@@ -30,6 +30,26 @@ def _process_node_id(pid: int, create_key: str) -> str:
     return f"proc:{pid}:{create_key}"
 
 
+def _create_process_instance(
+    graph: nx.MultiDiGraph,
+    process_instances: Dict[int, str],
+    process_birth_index: Counter[int],
+    pid: int,
+    event: Dict[str, Any],
+) -> str:
+    create_key = str(event.get("ts_ns") or event.get("timestamp") or process_birth_index[pid])
+    process_birth_index[pid] += 1
+    process_instances[pid] = _process_node_id(pid, create_key)
+    return _ensure_node(
+        graph,
+        process_instances[pid],
+        "process",
+        event.get("comm") or f"pid:{pid}",
+        pid=pid,
+        comm=event.get("comm") or "",
+    )
+
+
 def build_provenance_graph(events: Iterable[Dict[str, Any]]) -> nx.MultiDiGraph:
     """Build a multi-dimensional provenance graph for one session."""
     normalized = []
@@ -40,50 +60,65 @@ def build_provenance_graph(events: Iterable[Dict[str, Any]]) -> nx.MultiDiGraph:
     graph = nx.MultiDiGraph()
     process_instances: Dict[int, str] = {}
     process_birth_index: Counter[int] = Counter()
+    last_event_ts_by_pid: Dict[int, int] = {}
 
     for event in normalized:
         pid = event.get("pid")
         pid_node = None
-
-        if pid is not None:
-            if pid not in process_instances:
-                create_key = str(event.get("ts_ns") or event.get("timestamp") or process_birth_index[pid])
-                process_birth_index[pid] += 1
-                process_instances[pid] = _process_node_id(pid, create_key)
-            pid_node = _ensure_node(
-                graph,
-                process_instances[pid],
-                "process",
-                event.get("comm") or f"pid:{pid}",
-                pid=pid,
-                comm=event.get("comm") or "",
-            )
-
         source = event.get("source")
         action = event.get("action")
-        edge_attrs = {
-            "action": action,
-            "source": source,
-            "timestamp": event.get("timestamp"),
-            "ts_ns": event.get("ts_ns"),
-        }
+        event_key = event.get("event_key") or f"{source}.{action}"
+        current_ts_ns = int(event.get("ts_ns") or 0)
 
-        if source == "process" and pid_node is not None:
-            if action in {"fork", "exec"}:
-                create_key = str(event.get("ts_ns") or event.get("timestamp") or process_birth_index[pid])
-                process_instances[pid] = _process_node_id(pid, create_key)
+        if pid is not None:
+            should_rotate_instance = False
+            if pid not in process_instances:
+                should_rotate_instance = True
+            elif source == "process" and action == "exec":
+                should_rotate_instance = True
+            elif source == "process" and action == "fork" and process_instances.get(pid):
+                should_rotate_instance = False
+
+            if should_rotate_instance:
+                pid_node = _create_process_instance(
+                    graph,
+                    process_instances,
+                    process_birth_index,
+                    int(pid),
+                    event,
+                )
+            else:
                 pid_node = _ensure_node(
                     graph,
-                    process_instances[pid],
+                    process_instances[int(pid)],
                     "process",
                     event.get("comm") or f"pid:{pid}",
                     pid=pid,
                     comm=event.get("comm") or "",
                 )
+
+        delta_ns = 0
+        if pid is not None and current_ts_ns > 0:
+            previous_ts_ns = last_event_ts_by_pid.get(int(pid))
+            if previous_ts_ns is not None and current_ts_ns >= previous_ts_ns:
+                delta_ns = current_ts_ns - previous_ts_ns
+            last_event_ts_by_pid[int(pid)] = current_ts_ns
+
+        edge_attrs = {
+            "action": action,
+            "source": source,
+            "event_key": event_key,
+            "timestamp": event.get("timestamp"),
+            "ts_ns": event.get("ts_ns"),
+            "timeline_ts": event.get("timeline_ts"),
+            "delta_ns": delta_ns,
+        }
+
+        if source == "process" and pid_node is not None:
             ppid = event.get("ppid")
             if ppid is not None and int(ppid) in process_instances:
                 parent_node = process_instances[int(ppid)]
-                graph.add_edge(parent_node, pid_node, **edge_attrs)
+                graph.add_edge(parent_node, pid_node, **edge_attrs, relation="process.lineage")
             continue
 
         if pid_node is None:
@@ -93,13 +128,19 @@ def build_provenance_graph(events: Iterable[Dict[str, Any]]) -> nx.MultiDiGraph:
             file_path = event.get("file_path")
             if file_path:
                 file_node = _ensure_node(graph, f"file:{file_path}", "file", file_path, path=file_path)
-                graph.add_edge(pid_node, file_node, **edge_attrs, write_bytes=event.get("write_bytes", 0))
+                graph.add_edge(
+                    pid_node,
+                    file_node,
+                    **edge_attrs,
+                    relation="file.access",
+                    write_bytes=event.get("write_bytes", 0),
+                )
             if action == "rename" and event.get("file_new_path"):
                 new_path = event["file_new_path"]
                 new_node = _ensure_node(graph, f"file:{new_path}", "file", new_path, path=new_path)
                 if file_path:
                     graph.add_edge(f"file:{file_path}", new_node, **edge_attrs, relation="rename_to")
-                graph.add_edge(pid_node, new_node, **edge_attrs)
+                graph.add_edge(pid_node, new_node, **edge_attrs, relation="file.access")
             continue
 
         if source == "net" and event.get("remote_ip"):
@@ -114,13 +155,13 @@ def build_provenance_graph(events: Iterable[Dict[str, Any]]) -> nx.MultiDiGraph:
                 ip=remote_ip,
                 port=remote_port,
             )
-            graph.add_edge(pid_node, net_node, **edge_attrs)
+            graph.add_edge(pid_node, net_node, **edge_attrs, relation="net.connect")
             continue
 
         if source == "dns" and event.get("dns_host"):
             host = event["dns_host"]
             dns_node = _ensure_node(graph, f"dns:{host}", "dns", host, host=host)
-            graph.add_edge(pid_node, dns_node, **edge_attrs)
+            graph.add_edge(pid_node, dns_node, **edge_attrs, relation="dns.query")
             continue
 
         if source == "memory":
@@ -133,18 +174,25 @@ def build_provenance_graph(events: Iterable[Dict[str, Any]]) -> nx.MultiDiGraph:
                 protection=event.get("memory_protection") or "",
                 length=event.get("memory_length", 0),
             )
-            graph.add_edge(pid_node, memory_node, **edge_attrs)
+            graph.add_edge(pid_node, memory_node, **edge_attrs, relation=f"memory.{action}")
             if action == "vm_writev" and event.get("target_pid") is not None:
                 target_pid = int(event["target_pid"])
                 if target_pid not in process_instances:
-                    process_instances[target_pid] = _process_node_id(target_pid, "target")
-                target_node = _ensure_node(
-                    graph,
-                    process_instances[target_pid],
-                    "process",
-                    f"pid:{target_pid}",
-                    pid=target_pid,
-                )
+                    target_node = _create_process_instance(
+                        graph,
+                        process_instances,
+                        process_birth_index,
+                        target_pid,
+                        {"comm": f"pid:{target_pid}", "ts_ns": event.get("ts_ns"), "timestamp": event.get("timestamp")},
+                    )
+                else:
+                    target_node = _ensure_node(
+                        graph,
+                        process_instances[target_pid],
+                        "process",
+                        f"pid:{target_pid}",
+                        pid=target_pid,
+                    )
                 graph.add_edge(pid_node, target_node, **edge_attrs, relation="vm_writev_target")
             continue
 
@@ -157,7 +205,7 @@ def build_provenance_graph(events: Iterable[Dict[str, Any]]) -> nx.MultiDiGraph:
                 syscall_name,
                 syscall=syscall_name,
             )
-            graph.add_edge(pid_node, syscall_node, **edge_attrs)
+            graph.add_edge(pid_node, syscall_node, **edge_attrs, relation="syscall.invoke")
             continue
 
         if source == "kmod" and event.get("module_name"):
@@ -169,7 +217,7 @@ def build_provenance_graph(events: Iterable[Dict[str, Any]]) -> nx.MultiDiGraph:
                 module_name,
                 module=module_name,
             )
-            graph.add_edge(pid_node, module_node, **edge_attrs)
+            graph.add_edge(pid_node, module_node, **edge_attrs, relation="kmod.load")
 
     return graph
 

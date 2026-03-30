@@ -1,0 +1,42 @@
+{
+  "total_samples": 2760,
+  "total_graphs": 2760,
+  "scenarios": {
+    "benign": {
+      "samples": 226,
+      "graphs": 226,
+      "session_index_min": 0,
+      "session_index_max": 225
+    },
+    "forkbomb": {
+      "samples": 146,
+      "graphs": 146,
+      "session_index_min": 226,
+      "session_index_max": 371
+    },
+    "ransom": {
+      "samples": 138,
+      "graphs": 138,
+      "session_index_min": 372,
+      "session_index_max": 509
+    },
+    "slow_breach": {
+      "samples": 749,
+      "graphs": 749,
+      "session_index_min": 510,
+      "session_index_max": 1258
+    },
+    "scan": {
+      "samples": 1221,
+      "graphs": 1221,
+      "session_index_min": 1259,
+      "session_index_max": 2479
+    },
+    "advanced": {
+      "samples": 280,
+      "graphs": 280,
+      "session_index_min": 2480,
+      "session_index_max": 2759
+    }
+  }
+}

@@ -11,9 +11,17 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import datetime, timezone
+import sys
+from pathlib import Path
 
 from bcc import BPF
+
+
+ROOT_DIR = Path(__file__).resolve().parents[1]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
+from monitoring.time_utils import monotonic_ns_to_utc_iso
 
 
 WRITE_SAMPLE_RATE = max(1, int(os.getenv("WRITE_SAMPLE_RATE", "1")))
@@ -52,6 +60,7 @@ struct data_t {{
 BPF_HASH(inflight_open, u64, struct path_t);
 BPF_HASH(fd_paths, struct fd_key_t, struct path_t);
 BPF_PERCPU_ARRAY(temp_buffer, struct data_t, 1);
+BPF_PERCPU_ARRAY(temp_path_buffer, struct path_t, 1);
 BPF_PERF_OUTPUT(events);
 
 static __always_inline struct data_t* get_data_buffer() {{
@@ -71,6 +80,16 @@ static __always_inline struct data_t* get_data_buffer() {{
     return data;
 }}
 
+static __always_inline struct path_t* get_path_buffer() {{
+    u32 zero = 0;
+    struct path_t *path = temp_path_buffer.lookup(&zero);
+    if (!path) {{
+        return NULL;
+    }}
+    path->fname[0] = 0;
+    return path;
+}}
+
 int trace_openat(struct tracepoint__syscalls__sys_enter_openat *args) {{
     struct data_t *data = get_data_buffer();
     if (!data) {{
@@ -88,9 +107,12 @@ int trace_openat(struct tracepoint__syscalls__sys_enter_openat *args) {{
         return 0;
     }}
 
-    struct path_t pending = {{}};
-    __builtin_memcpy(&pending.fname, &data->fname, sizeof(pending.fname));
-    inflight_open.update(&pid_tgid, &pending);
+    struct path_t *pending = get_path_buffer();
+    if (!pending) {{
+        return 0;
+    }}
+    __builtin_memcpy(&pending->fname, &data->fname, sizeof(pending->fname));
+    inflight_open.update(&pid_tgid, pending);
 
     events.perf_submit((void *)args, data, sizeof(*data));
     return 0;
@@ -108,9 +130,11 @@ int trace_openat_ret(struct tracepoint__syscalls__sys_exit_openat *args) {{
             .pid = pid_tgid >> 32,
             .fd = args->ret,
         }};
-        struct path_t path_value = {{}};
-        __builtin_memcpy(&path_value.fname, &pending->fname, sizeof(path_value.fname));
-        fd_paths.update(&fd_key, &path_value);
+        struct path_t *path_value = get_path_buffer();
+        if (path_value) {{
+            __builtin_memcpy(&path_value->fname, &pending->fname, sizeof(path_value->fname));
+            fd_paths.update(&fd_key, path_value);
+        }}
     }}
 
     inflight_open.delete(&pid_tgid);
@@ -257,7 +281,7 @@ def main() -> None:
             "comm": comm,
             "fd": int(event.fd),
             "ts_ns": int(event.ts_ns),
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": monotonic_ns_to_utc_iso(int(event.ts_ns)),
         }
 
         if event.event_type == 1:

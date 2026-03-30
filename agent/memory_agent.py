@@ -12,9 +12,16 @@ import json
 import os
 import signal
 import sys
-from datetime import datetime, timezone
+from pathlib import Path
 
 from bcc import BPF
+
+
+ROOT_DIR = Path(__file__).resolve().parents[1]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
+from monitoring.time_utils import monotonic_ns_to_utc_iso
 
 
 OUT_DIR = "/var/log/os_monitor_log"
@@ -148,7 +155,7 @@ def main() -> None:
             "pid": int(event.pid),
             "comm": event.comm.decode("utf-8", "replace").strip("\x00"),
             "ts_ns": int(event.ts_ns),
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": monotonic_ns_to_utc_iso(int(event.ts_ns)),
             "address": int(event.address),
             "length": int(event.length),
             "flags": int(event.flags),

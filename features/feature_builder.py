@@ -98,8 +98,11 @@ def build_row(session: Dict[str, Any], thresholds: ThresholdProfile) -> Dict[str
 
     row = {
         "session_index": session.get("session_index"),
+        "timeline_index": session.get("timeline_index"),
         "start": session["start"],
         "end": session["end"],
+        "start_ts": session.get("start_ts"),
+        "end_ts": session.get("end_ts"),
         "window_ms": session.get("window_ms"),
         "stride_ms": session.get("stride_ms"),
         "event_count": session.get("event_count", len(events)),
@@ -135,8 +138,13 @@ def main() -> None:
         graphs.append(
             {
                 "session_index": session["session_index"],
+                "timeline_index": session.get("timeline_index"),
                 "start": session["start"],
                 "end": session["end"],
+                "start_ts": session.get("start_ts"),
+                "end_ts": session.get("end_ts"),
+                "window_ms": session.get("window_ms"),
+                "stride_ms": session.get("stride_ms"),
                 "graph": build_provenance_graph(session["events"]),
             }
         )

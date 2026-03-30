@@ -6,12 +6,19 @@ process_agent.py
 需要 root 权限运行。
 """
 
+from pathlib import Path
 from bcc import BPF
-from datetime import datetime, timezone
 import json
 import os
 import signal
 import sys
+
+
+ROOT_DIR = Path(__file__).resolve().parents[1]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
+from monitoring.time_utils import monotonic_ns_to_utc_iso
 
 
 OUT_DIR = "/var/log/os_monitor_log"
@@ -19,7 +26,6 @@ os.makedirs(OUT_DIR, exist_ok=True)
 OUT_FILE = os.path.join(OUT_DIR, "process.jsonl")
 
 BPF_PROGRAM = r"""
-#include <uapi/linux/ptrace.h>
 #include <linux/sched.h>
 
 struct data_t {
@@ -32,47 +38,49 @@ struct data_t {
 
 BPF_PERF_OUTPUT(events);
 
-int trace_exec(struct pt_regs *ctx, struct task_struct *p) {
+static __always_inline u32 current_ppid(void) {
+    struct task_struct *task = (struct task_struct *)bpf_get_current_task();
+    u32 ppid = 0;
+    if (!task) {
+        return 0;
+    }
+    bpf_probe_read_kernel(&ppid, sizeof(ppid), &task->real_parent->tgid);
+    return ppid;
+}
+
+TRACEPOINT_PROBE(sched, sched_process_exec) {
     struct data_t data = {};
-    data.pid = p->pid;
-    data.ppid = p->real_parent->pid;
+    data.pid = args->pid;
+    data.ppid = current_ppid();
     data.ts_ns = bpf_ktime_get_ns();
     data.event = 1;
     bpf_get_current_comm(&data.comm, sizeof(data.comm));
-    events.perf_submit(ctx, &data, sizeof(data));
+    events.perf_submit(args, &data, sizeof(data));
     return 0;
 }
 
-int trace_fork(struct pt_regs *ctx, struct task_struct *p) {
+TRACEPOINT_PROBE(sched, sched_process_fork) {
     struct data_t data = {};
-    data.pid = p->pid;
-    data.ppid = p->real_parent->pid;
+    data.pid = args->child_pid;
+    data.ppid = args->parent_pid;
     data.ts_ns = bpf_ktime_get_ns();
     data.event = 2;
-    bpf_get_current_comm(&data.comm, sizeof(data.comm));
-    events.perf_submit(ctx, &data, sizeof(data));
+    bpf_probe_read_kernel_str(&data.comm, sizeof(data.comm), args->child_comm);
+    events.perf_submit(args, &data, sizeof(data));
     return 0;
 }
 
-int trace_exit(struct pt_regs *ctx, struct task_struct *p) {
+TRACEPOINT_PROBE(sched, sched_process_exit) {
     struct data_t data = {};
-    data.pid = p->pid;
-    data.ppid = p->real_parent->pid;
+    data.pid = args->pid;
+    data.ppid = current_ppid();
     data.ts_ns = bpf_ktime_get_ns();
     data.event = 3;
     bpf_get_current_comm(&data.comm, sizeof(data.comm));
-    events.perf_submit(ctx, &data, sizeof(data));
+    events.perf_submit(args, &data, sizeof(data));
     return 0;
 }
 """
-
-def safe_attach(bpf, kprobe_name, fn_name):
-    """安全挂载 kprobe，避免异常退出"""
-    try:
-        bpf.attach_kprobe(event=kprobe_name, fn_name=fn_name)
-        return True
-    except Exception:
-        return False
 
 def write_record(record: dict):
     """写入 JSONL 文件"""
@@ -85,46 +93,19 @@ def write_record(record: dict):
 def main():
     print("[*] 正在加载 BPF 程序...")
     b = BPF(text=BPF_PROGRAM)
-
-    # 尝试挂载 exec
-    attached_exec = safe_attach(b, "do_execveat_common", "trace_exec")
-    if not attached_exec:
-        try:
-            b.attach_tracepoint("syscalls:sys_enter_execve", "trace_exec")
-            attached_exec = True
-        except Exception:
-            attached_exec = False
-    if attached_exec:
-        print("[+] exec kprobe/tracepoint 挂载成功")
-    else:
-        print("[!] exec 挂载失败")
-
-    # 挂载 fork
-    if safe_attach(b, "do_fork", "trace_fork"):
-        print("[+] fork kprobe 挂载成功")
-    else:
-        print("[!] fork 挂载失败")
-
-    # 挂载 exit
-    if safe_attach(b, "do_exit", "trace_exit"):
-        print("[+] exit kprobe 挂载成功")
-    else:
-        try:
-            b.attach_tracepoint("sched:sched_process_exit", "trace_exit")
-            print("[+] exit tracepoint 挂载成功")
-        except Exception:
-            print("[!] exit 挂载失败")
+    print("[+] 已启用 sched:sched_process_exec/fork/exit tracepoints")
 
     def handle_event(cpu, data, size):
         event = b["events"].event(data)
+        ts_ns = int(event.ts_ns)
         record = {
             "source": "process",
             "pid": int(event.pid),
             "ppid": int(event.ppid),
             "comm": event.comm.decode('utf-8', 'replace').strip("\x00"),
-            "ts_ns": int(event.ts_ns),
+            "ts_ns": ts_ns,
             "event": {1: "exec", 2: "fork", 3: "exit"}.get(int(event.event), "unknown"),
-            "timestamp": datetime.now(timezone.utc).isoformat()
+            "timestamp": monotonic_ns_to_utc_iso(ts_ns),
         }
 
         # 控制台打印日志

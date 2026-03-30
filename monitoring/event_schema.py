@@ -32,6 +32,16 @@ def safe_int(value: Any) -> Optional[int]:
         return None
 
 
+def safe_float(value: Any) -> Optional[float]:
+    """Best-effort float parsing."""
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def parse_timestamp(value: Any) -> Optional[datetime]:
     """Parse an ISO timestamp and normalize to UTC."""
     if value in (None, ""):
@@ -118,6 +128,13 @@ def normalize_event(record: Dict[str, Any], source_hint: Optional[str] = None) -
         or record.get("start")
     )
     ts_ns = safe_int(record.get("ts_ns"))
+    timeline_ts = (
+        (ts_ns / 1e9)
+        if ts_ns is not None
+        else safe_float(record.get("timeline_ts"))
+    )
+    if timeline_ts is None and wall_time is not None:
+        timeline_ts = wall_time.timestamp()
 
     canonical = {
         "source": source,
@@ -129,6 +146,7 @@ def normalize_event(record: Dict[str, Any], source_hint: Optional[str] = None) -
         "comm": str(record.get("comm") or ""),
         "timestamp": wall_time.isoformat() if wall_time else None,
         "sort_ts": wall_time.timestamp() if wall_time else None,
+        "timeline_ts": timeline_ts,
         "ts_ns": ts_ns,
         "raw": record,
     }
@@ -173,11 +191,13 @@ def normalize_event(record: Dict[str, Any], source_hint: Optional[str] = None) -
 
 
 def event_order_key(event: Dict[str, Any]) -> Tuple[int, float, int, str]:
-    """Sort by wall-clock time first, then by monotonic timestamp."""
+    """Sort by monotonic event time first, then by wall-clock time."""
+    timeline_missing = 1 if event.get("timeline_ts") is None else 0
+    timeline_ts = float(event.get("timeline_ts") or 0.0)
     wall_missing = 1 if event.get("sort_ts") is None else 0
     wall_ts = float(event.get("sort_ts") or 0.0)
     mono_ns = int(event.get("ts_ns") or 0)
-    return wall_missing, wall_ts, mono_ns, event.get("event_key", "")
+    return timeline_missing, timeline_ts, wall_missing, wall_ts, mono_ns, event.get("event_key", "")
 
 
 def sort_events(events: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -220,4 +240,3 @@ def load_normalized_events(input_path: str) -> List[Dict[str, Any]]:
                 events.append(normalize_event(raw, source_hint=source_hint))
 
     return sort_events(events)
-

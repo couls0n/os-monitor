@@ -73,10 +73,12 @@ def shannon_entropy(value: str) -> float:
 
 def event_time_seconds(event: Dict[str, Any]) -> float:
     """Return a comparable timestamp for the event."""
-    if event.get("sort_ts") is not None:
-        return float(event["sort_ts"])
+    if event.get("timeline_ts") is not None:
+        return float(event["timeline_ts"])
     if event.get("ts_ns") is not None:
         return float(event["ts_ns"]) / 1e9
+    if event.get("sort_ts") is not None:
+        return float(event["sort_ts"])
     return 0.0
 
 

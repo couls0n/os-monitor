@@ -82,7 +82,7 @@ def main() -> None:
 
     print("-" * 40)
     print("[*] Detonation finished.")
-    print("[*] 1. Stop monitoring (sudo bash stop_monitoring.sh)")
+    print("[*] 1. Stop monitoring (sudo python3 os_monitor.py stop)")
     print("[*] 2. Collect logs (python3 aggregator/fast_collector.py)")
     print("[*] 3. Revert the VM snapshot immediately")
 

@@ -6,11 +6,19 @@ net_agent.py
 """
 
 from bcc import BPF
-from datetime import datetime, timezone
 import json
 import os
 import socket
 import struct
+import sys
+from pathlib import Path
+
+ROOT_DIR = Path(__file__).resolve().parents[1]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
+from monitoring.time_utils import monotonic_ns_to_utc_iso
+
 OUT_DIR = "/var/log/os_monitor_log"
 os.makedirs(OUT_DIR, exist_ok=True)
 OUT_FILE = os.path.join(OUT_DIR, "net.jsonl")
@@ -95,7 +103,7 @@ def main():
             "daddr": int(event.daddr),
             "daddr_str": ipv4_from_int(int(event.daddr)),
             "event": "connect",
-            "timestamp": datetime.now(timezone.utc).isoformat()
+            "timestamp": monotonic_ns_to_utc_iso(int(event.ts_ns)),
         }
 
         # 控制台打印日志

@@ -1,0 +1,10 @@
+{
+  "run_id": "20260330T061108Z",
+  "log_dir": "/var/log/os_monitor_log",
+  "window_ms": 500,
+  "stride_ms": 250,
+  "mode": null,
+  "scenario": null,
+  "attack": null,
+  "built_at": "20260330T061114Z"
+}

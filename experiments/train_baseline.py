@@ -5,15 +5,23 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 from typing import Tuple
 
 import joblib
+import numpy as np
 import pandas as pd
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import classification_report, roc_auc_score
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder
+
+ROOT_DIR = Path(__file__).resolve().parents[1]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
+from experiments.split_utils import prepare_split_frame, time_split_boundary
 
 
 def parse_args() -> argparse.Namespace:
@@ -24,6 +32,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--metrics-out", default="models/rf_baseline_metrics.json")
     parser.add_argument("--test-size", type=float, default=0.3)
     parser.add_argument("--random-state", type=int, default=42)
+    parser.add_argument("--split-strategy", choices=["auto", "time", "random"], default="auto")
+    parser.add_argument("--allow-overlap-windows", action="store_true")
+    parser.add_argument("--sampling-phase", type=int, default=0)
     return parser.parse_args()
 
 
@@ -45,7 +56,20 @@ def build_feature_matrix(merged: pd.DataFrame) -> Tuple[pd.DataFrame, pd.Series]
     feature_frame = merged.drop(
         columns=[
             column
-            for column in ("label", "start", "end", "dominant_comm")
+            for column in (
+                "label",
+                "start",
+                "end",
+                "start_ts",
+                "end_ts",
+                "session_index",
+                "timeline_index",
+                "dominant_comm",
+                "_order_ts",
+                "_order_session",
+                "_order_fallback",
+                "_ordered_row_id",
+            )
             if column in merged.columns
         ]
     )
@@ -55,25 +79,67 @@ def build_feature_matrix(merged: pd.DataFrame) -> Tuple[pd.DataFrame, pd.Series]
     return numeric, label
 
 
+def choose_split_indices(
+    labels: np.ndarray,
+    sample_count: int,
+    args: argparse.Namespace,
+) -> tuple[list[int], list[int], str]:
+    """Pick a train/test split while preferring chronological holdout."""
+    all_classes = set(labels.tolist())
+
+    if args.split_strategy in {"auto", "time"}:
+        split_at = time_split_boundary(sample_count, args.test_size)
+        train_idx = list(range(split_at))
+        test_idx = list(range(split_at, sample_count))
+        train_classes = set(labels[train_idx].tolist())
+        test_classes = set(labels[test_idx].tolist())
+        if args.split_strategy == "time" or (train_classes == all_classes and test_classes):
+            return train_idx, test_idx, "time"
+        print("[*] time split would drop class coverage; falling back to random split")
+
+    stratify = labels if len(all_classes) > 1 else None
+    try:
+        train_idx, test_idx = train_test_split(
+            list(range(sample_count)),
+            test_size=args.test_size,
+            random_state=args.random_state,
+            stratify=stratify,
+        )
+    except ValueError:
+        train_idx, test_idx = train_test_split(
+            list(range(sample_count)),
+            test_size=args.test_size,
+            random_state=args.random_state,
+            stratify=None,
+        )
+    return sorted(train_idx), sorted(test_idx), "random"
+
+
 def main() -> None:
     args = parse_args()
 
     features = pd.read_parquet(args.features)
     labels = pd.read_csv(args.labels)
     merged = merge_features_and_labels(features, labels)
-    X, y = build_feature_matrix(merged)
+    prepared, disjoint_step = prepare_split_frame(
+        merged,
+        allow_overlap_windows=args.allow_overlap_windows,
+        sampling_phase=args.sampling_phase,
+    )
+    if prepared.empty:
+        raise SystemExit("no samples remain after overlap filtering")
+    if len(prepared) != len(merged):
+        print(f"[*] overlap-aware downsampling kept {len(prepared)}/{len(merged)} windows (step={disjoint_step})")
+
+    X, y = build_feature_matrix(prepared)
 
     encoder = LabelEncoder()
     y_encoded = encoder.fit_transform(y)
-
-    stratify = y_encoded if len(set(y_encoded)) > 1 else None
-    X_train, X_test, y_train, y_test = train_test_split(
-        X,
-        y_encoded,
-        test_size=args.test_size,
-        random_state=args.random_state,
-        stratify=stratify,
-    )
+    train_idx, test_idx, effective_split = choose_split_indices(y_encoded, len(X), args)
+    X_train = X.iloc[train_idx]
+    X_test = X.iloc[test_idx]
+    y_train = y_encoded[train_idx]
+    y_test = y_encoded[test_idx]
 
     clf = RandomForestClassifier(
         n_estimators=300,
@@ -87,6 +153,11 @@ def main() -> None:
     y_pred = clf.predict(X_test)
     metrics = {
         "classes": encoder.classes_.tolist(),
+        "split_strategy": effective_split,
+        "allow_overlap_windows": args.allow_overlap_windows,
+        "disjoint_step": disjoint_step,
+        "samples_before_filter": int(len(merged)),
+        "samples_after_filter": int(len(prepared)),
         "classification_report": classification_report(
             y_test,
             y_pred,
